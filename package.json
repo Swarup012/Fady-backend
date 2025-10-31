@@ -4,7 +4,7 @@
   "description":"Feedback management System Backend",
   "main": "index.js",
   "scripts": {
-	  "start":"node server.js",
+	  "start": "node ./node_modules/.bin/nodemon server.js",
 	  "dev":"nodemon server.js"
   },
   "keywords": ["feedback","authentication","supabase"],

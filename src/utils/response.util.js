@@ -1,4 +1,4 @@
-class ResponseUtil {
+ class ResponseUtil {
   static success(res, message, data = null, statusCode = 200) {
     const response = {
       success: true,

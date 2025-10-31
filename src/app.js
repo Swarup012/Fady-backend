@@ -5,6 +5,7 @@ const authRoutes = require("./routes/auth.routes");
 const boardRoutes = require("./routes/board.routes");
 const postRoutes = require("./routes/post.routes");
 const publicRoutes = require("./routes/public.routes"); // ← ADD THIS
+const roadMapRoutes = require("./routes/roadmap.routes.js");
 
 const app = express();
 
@@ -55,6 +56,7 @@ app.use("/api/public", publicRoutes); // ← ADD THIS BEFORE AUTH ROUTES
 app.use("/api/auth", authRoutes);
 app.use("/api/boards", boardRoutes);
 app.use("/api", postRoutes);
+app.use("/api", roadMapRoutes);
 
 // 404 Handler
 app.use((req, res) => {
