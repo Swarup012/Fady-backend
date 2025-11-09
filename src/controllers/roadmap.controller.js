@@ -15,7 +15,7 @@ const roadmapController = {
       if (isPublic !== undefined) filters.isPublic = isPublic === 'true';
 
       const result = await roadmapService.getRoadmapItems(boardSlug, filters);
-      return responseUtil.success(res, result, 'Roadmap items retrieved successfully');
+      return responseUtil.success(res, 'Roadmap items retrieved successfully', result);
     } catch (error) {
       console.error('Error fetching roadmap items:', error);
       return responseUtil.error(res, error.message, 500);
@@ -33,7 +33,7 @@ const roadmapController = {
       if (category) filters.category = category;
 
       const result = await roadmapService.getRoadmapItems(boardSlug, filters);
-      return responseUtil.success(res, result, 'Public roadmap items retrieved successfully');
+      return responseUtil.success(res, 'Public roadmap items retrieved successfully', result);
     } catch (error) {
       console.error('Error fetching public roadmap items:', error);
       return responseUtil.error(res, error.message, 500);
@@ -50,7 +50,7 @@ const roadmapController = {
         return responseUtil.error(res, 'Roadmap item not found', 404);
       }
 
-      return responseUtil.success(res, { item }, 'Roadmap item retrieved successfully');
+      return responseUtil.success(res, 'Roadmap item retrieved successfully', { item });
     } catch (error) {
       console.error('Error fetching roadmap item:', error);
       return responseUtil.error(res, error.message, 500);
@@ -71,7 +71,7 @@ const roadmapController = {
         return responseUtil.error(res, 'Roadmap item is not public', 403);
       }
 
-      return responseUtil.success(res, { item }, 'Roadmap item retrieved successfully');
+      return responseUtil.success(res, 'Roadmap item retrieved successfully', { item });
     } catch (error) {
       console.error('Error fetching roadmap item:', error);
       return responseUtil.error(res, error.message, 500);
@@ -86,7 +86,7 @@ const roadmapController = {
       const itemData = req.body;
 
       const item = await roadmapService.createRoadmapItem(boardSlug, itemData, userId);
-      return responseUtil.success(res, { item }, 'Roadmap item created successfully', 201);
+      return responseUtil.success(res, 'Roadmap item created successfully', { item }, 201);
     } catch (error) {
       console.error('Error creating roadmap item:', error);
       return responseUtil.error(res, error.message, 500);
@@ -100,7 +100,7 @@ const roadmapController = {
       const updates = req.body;
 
       const item = await roadmapService.updateRoadmapItem(itemId, updates);
-      return responseUtil.success(res, { item }, 'Roadmap item updated successfully');
+      return responseUtil.success(res, 'Roadmap item updated successfully', { item });
     } catch (error) {
       console.error('Error updating roadmap item:', error);
       return responseUtil.error(res, error.message, 500);
@@ -112,7 +112,7 @@ const roadmapController = {
     try {
       const { itemId } = req.params;
       await roadmapService.deleteRoadmapItem(itemId);
-      return responseUtil.success(res, null, 'Roadmap item deleted successfully');
+      return responseUtil.success(res, 'Roadmap item deleted successfully', null);
     } catch (error) {
       console.error('Error deleting roadmap item:', error);
       return responseUtil.error(res, error.message, 500);
@@ -127,7 +127,7 @@ const roadmapController = {
 
       const result = await roadmapService.voteRoadmapItem(itemId, userId);
       const message = result.voted ? 'Vote added successfully' : 'Vote removed successfully';
-      return responseUtil.success(res, result, message);
+      return responseUtil.success(res, message, result);
     } catch (error) {
       console.error('Error voting roadmap item:', error);
       return responseUtil.error(res, error.message, 500);
@@ -141,7 +141,7 @@ const roadmapController = {
       const userId = req.user.id;
 
       const result = await roadmapService.hasUserVoted(itemId, userId);
-      return responseUtil.success(res, result);
+      return responseUtil.success(res, 'Vote status retrieved successfully', result);
     } catch (error) {
       console.error('Error checking vote:', error);
       return responseUtil.error(res, error.message, 500);
@@ -153,7 +153,7 @@ const roadmapController = {
     try {
       const { itemId } = req.params;
       const result = await roadmapService.getComments(itemId);
-      return responseUtil.success(res, result, 'Comments retrieved successfully');
+      return responseUtil.success(res, 'Comments retrieved successfully', result);
     } catch (error) {
       console.error('Error fetching comments:', error);
       return responseUtil.error(res, error.message, 500);
@@ -168,7 +168,7 @@ const roadmapController = {
       const userId = req.user.id;
 
       const comment = await roadmapService.addComment(itemId, content, userId, parentId);
-      return responseUtil.success(res, { comment }, 'Comment added successfully', 201);
+      return responseUtil.success(res, 'Comment added successfully', { comment }, 201);
     } catch (error) {
       console.error('Error adding comment:', error);
       return responseUtil.error(res, error.message, 500);
@@ -182,7 +182,7 @@ const roadmapController = {
       const { content } = req.body;
 
       const comment = await roadmapService.updateComment(commentId, content);
-      return responseUtil.success(res, { comment }, 'Comment updated successfully');
+      return responseUtil.success(res, 'Comment updated successfully', { comment });
     } catch (error) {
       console.error('Error updating comment:', error);
       return responseUtil.error(res, error.message, 500);
@@ -194,7 +194,7 @@ const roadmapController = {
     try {
       const { commentId } = req.params;
       await roadmapService.deleteComment(commentId);
-      return responseUtil.success(res, null, 'Comment deleted successfully');
+      return responseUtil.success(res, 'Comment deleted successfully', null);
     } catch (error) {
       console.error('Error deleting comment:', error);
       return responseUtil.error(res, error.message, 500);
@@ -209,7 +209,7 @@ const roadmapController = {
       const updateData = req.body;
 
       const update = await roadmapService.addUpdate(itemId, updateData, userId);
-      return responseUtil.success(res, { update }, 'Update added successfully', 201);
+      return responseUtil.success(res, 'Update added successfully', { update }, 201);
     } catch (error) {
       console.error('Error adding update:', error);
       return responseUtil.error(res, error.message, 500);
@@ -223,7 +223,7 @@ const roadmapController = {
       const { feedbackId } = req.body;
 
       await roadmapService.linkFeedback(itemId, feedbackId);
-      return responseUtil.success(res, null, 'Feedback linked successfully', 201);
+      return responseUtil.success(res, 'Feedback linked successfully', null, 201);
     } catch (error) {
       if (error.message === 'Feedback already linked') {
         return responseUtil.error(res, 'Feedback already linked to this roadmap item', 400);
@@ -239,7 +239,7 @@ const roadmapController = {
       const { itemId, feedbackId } = req.params;
 
       await roadmapService.unlinkFeedback(itemId, feedbackId);
-      return responseUtil.success(res, null, 'Feedback unlinked successfully');
+      return responseUtil.success(res, 'Feedback unlinked successfully', null);
     } catch (error) {
       console.error('Error unlinking feedback:', error);
       return responseUtil.error(res, error.message, 500);
@@ -252,7 +252,7 @@ const roadmapController = {
       const { itemIds } = req.body;
 
       await roadmapService.reorderItems(itemIds);
-      return responseUtil.success(res, null, 'Items reordered successfully');
+      return responseUtil.success(res, 'Items reordered successfully', null);
     } catch (error) {
       console.error('Error reordering items:', error);
       return responseUtil.error(res, error.message, 500);
@@ -265,7 +265,7 @@ const roadmapController = {
       const { boardSlug } = req.params;
 
       const stats = await roadmapService.getRoadmapStats(boardSlug);
-      return responseUtil.success(res, stats, 'Roadmap statistics retrieved successfully');
+      return responseUtil.success(res, 'Roadmap statistics retrieved successfully', stats);
     } catch (error) {
       console.error('Error fetching roadmap stats:', error);
       return responseUtil.error(res, error.message, 500);

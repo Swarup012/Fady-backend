@@ -2,6 +2,36 @@ const { supabaseAdmin } = require("../config/supabase.config");
 
 class PostService {
   /**
+   * Get all posts (for admin dashboard)
+   */
+  async getAllPosts(userId, organizationId) {
+    try {
+      let query = supabaseAdmin
+        .from("posts")
+        .select(
+          `
+          *,
+          author:users!author_id(id, name, email),
+          board:boards!board_id(id, name, slug, color, icon)
+        `,
+        )
+        .eq("is_archived", false)
+        .eq("organization_id", organizationId)
+        .order("created_at", { ascending: false });
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      console.log(`✅ Retrieved ${data.length} posts for organization`);
+      return data;
+    } catch (error) {
+      console.error("❌ Get all posts error:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Get all posts for a board
    */
   async getPostsByBoard(boardSlug, filters = {}) {
@@ -111,21 +141,38 @@ class PostService {
    */
   async createPost({ board_id, title, description, author_id }) {
     try {
+      // Get board to find its organization
+      const { data: board, error: boardError } = await supabaseAdmin
+        .from('boards')
+        .select('organization_id')
+        .eq('id', board_id)
+        .single();
+
+      if (boardError) {
+        console.warn('⚠️ Could not find board organization:', boardError);
+      }
+
+      const postData = {
+        board_id,
+        title,
+        description: description || null,
+        author_id,
+        status: "open",
+        upvotes: 0,
+        comment_count: 0,
+        is_pinned: false,
+        is_archived: false,
+      };
+
+      // Add organization_id if board has one
+      if (board && board.organization_id) {
+        postData.organization_id = board.organization_id;
+        console.log(`✅ Adding organization_id to post: ${board.organization_id}`);
+      }
+
       const { data, error } = await supabaseAdmin
         .from("posts")
-        .insert([
-          {
-            board_id,
-            title,
-            description: description || null,
-            author_id,
-            status: "open",
-            upvotes: 0,
-            comment_count: 0,
-            is_pinned: false,
-            is_archived: false,
-          },
-        ])
+        .insert([postData])
         .select(
           `
           *,

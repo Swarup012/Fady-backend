@@ -75,13 +75,14 @@ router.get("/", boardController.getAllBoards);
 router.get("/check-slug/:slug", boardController.checkSlug);
 router.get("/:slug", boardController.getBoardBySlug);
 
-// ✅ ADMIN ONLY ROUTES
+// Board creation - any authenticated user can create
 router.post(
   "/",
-  authorize("admin"),
   createBoardValidation,
   boardController.createBoard,
 );
+
+// Board update/delete - only admin or owner
 router.put(
   "/:id",
   authorize("admin"),

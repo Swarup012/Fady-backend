@@ -4,6 +4,31 @@ const ResponseUtil = require("../utils/response.util");
 
 class PostController {
   /**
+   * Get all posts (for admin dashboard)
+   * GET /api/posts
+   */
+  async getAllPosts(req, res, next) {
+    try {
+      const userId = req.user.id;
+      const organizationId = req.user.organization_id;
+
+      if (!organizationId) {
+        return ResponseUtil.error(res, "User not associated with an organization", 400);
+      }
+
+      const posts = await postService.getAllPosts(userId, organizationId);
+
+      return ResponseUtil.success(res, "Posts retrieved successfully", {
+        posts,
+        count: posts.length,
+      });
+    } catch (error) {
+      console.error("Get all posts controller error:", error);
+      next(error);
+    }
+  }
+
+  /**
    * Get posts by board
    * GET /api/boards/:slug/posts
    */

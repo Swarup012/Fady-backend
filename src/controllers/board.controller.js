@@ -9,14 +9,29 @@ class BoardController {
       const userId = req.user.id;
       const userRole = req.user.role;
 
+      console.log('🎯 getAllBoards controller:');
+      console.log('   User ID:', userId);
+      console.log('   User Role:', userRole);
+      console.log('   User Org Role:', req.user.organization_role);
+      console.log('   Current Org ID:', req.user.current_organization_id);
+
       const boards = await boardService.getAllBoards(userId, userRole);
 
       return ResponseUtil.success(res, "Boards retrieved successfully", {
         boards,
         count: boards.length,
+        // Include organization info in response
+        organization: req.organization ? {
+          id: req.organization.id,
+          name: req.organization.name,
+          subdomain: req.organization.subdomain,
+          plan: req.organization.plan
+        } : null
       });
     } catch (error) {
-      console.error("Get boards controller error:", error);
+      console.error("❌ Get all boards controller error:", error);
+      console.error("   Error message:", error.message);
+      console.error("   Error stack:", error.stack);
       next(error);
     }
   }
@@ -62,6 +77,36 @@ class BoardController {
       });
     } catch (error) {
       console.error("Get public boards error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Get single PUBLIC board by slug (no authentication required)
+   * GET /api/public/boards/:slug
+   */
+  async getPublicBoardBySlug(req, res, next) {
+    try {
+      const { slug } = req.params;
+
+      const { data: board, error } = await supabaseAdmin
+        .from("boards")
+        .select("*")
+        .eq("slug", slug)
+        .eq("is_private", false)
+        .single();
+
+      if (error || !board) {
+        return ResponseUtil.error(res, "Board not found or is private", 404);
+      }
+
+      console.log(`✅ Retrieved public board: ${slug}`);
+
+      return ResponseUtil.success(res, "Board retrieved successfully", {
+        board,
+      });
+    } catch (error) {
+      console.error("Get public board by slug error:", error);
       next(error);
     }
   }
@@ -232,11 +277,6 @@ class BoardController {
 
   async createBoard(req, res, next) {
     try {
-      // ✅ ADMIN ONLY CHECK
-      if (req.user.role !== "admin") {
-        return ResponseUtil.error(res, "Only admins can create boards", 403);
-      }
-
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() });
@@ -244,6 +284,12 @@ class BoardController {
 
       const { name, description, is_private, color, icon, category } = req.body;
       const owner_id = req.user.id;
+
+      // Get user's organization_id (if they have one)
+      let organization_id = null;
+      if (req.user.organization_id) {
+        organization_id = req.user.organization_id;
+      }
 
       const board = await boardService.createBoard({
         name,
@@ -253,6 +299,7 @@ class BoardController {
         icon,
         category,
         owner_id,
+        organization_id,
       });
 
       return ResponseUtil.success(

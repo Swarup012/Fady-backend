@@ -120,13 +120,19 @@ const roadmapService = {
 
       if (boardError || !board) throw new Error(`Board '${boardSlug}' not found`);
 
+      // Clean up empty strings to null for optional fields
+      const cleanedData = {
+        ...itemData,
+        target_quarter: itemData.target_quarter || null,
+        target_date: itemData.target_date || null,
+        category: itemData.category || null,
+        board_id: board.id,
+        created_by: userId,
+      };
+
       const { data, error } = await supabaseAdmin
         .from('roadmap_items')
-        .insert({
-          ...itemData,
-          board_id: board.id,
-          created_by: userId,
-        })
+        .insert(cleanedData)
         .select(`
           *,
           created_by:users!roadmap_items_created_by_fkey(id, name, email, avatar_url),
@@ -147,9 +153,15 @@ const roadmapService = {
    * =============================== */
   updateRoadmapItem: async (itemId, updates) => {
     try {
+      // Clean up empty strings to null for optional fields
+      const cleanedUpdates = { ...updates };
+      if (cleanedUpdates.target_quarter === '') cleanedUpdates.target_quarter = null;
+      if (cleanedUpdates.target_date === '') cleanedUpdates.target_date = null;
+      if (cleanedUpdates.category === '') cleanedUpdates.category = null;
+
       const { data, error } = await supabaseAdmin
         .from('roadmap_items')
-        .update(updates)
+        .update(cleanedUpdates)
         .eq('id', itemId)
         .select()
         .single();

@@ -59,4 +59,7 @@ router.put(
   authController.updateProfile
 );
 
+// Update user role (post-auth role selection)
+router.put('/update-role', authController.updateRole);
+
 module.exports = router;

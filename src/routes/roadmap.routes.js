@@ -1,7 +1,7 @@
 // src/routes/roadmap.routes.js
 const express = require('express');
 const roadmapController = require('../controllers/roadmap.controller');
-const { authenticate } = require('../middleware/auth.middleware');
+const { authenticate, authorize } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
@@ -25,6 +25,12 @@ router.get(
 // AUTHENTICATED ROUTES (Login required)
 // ============================================
 
+// Get roadmap statistics (MUST BE BEFORE /boards/:boardSlug/roadmap)
+router.get(
+  '/boards/:boardSlug/roadmap/stats',
+  roadmapController.getRoadmapStats
+);
+
 // Get roadmap items (can see private items if authorized)
 router.get(
   '/boards/:boardSlug/roadmap',
@@ -35,12 +41,6 @@ router.get(
 router.get(
   '/roadmap/:itemId',
   roadmapController.getRoadmapItemById
-);
-
-// Get roadmap statistics
-router.get(
-  '/boards/:boardSlug/roadmap/stats',
-  roadmapController.getRoadmapStats
 );
 
 // Vote on roadmap item (toggle vote like upvote)
@@ -92,6 +92,7 @@ router.delete(
 router.post(
   '/boards/:boardSlug/roadmap',
   authenticate,
+  authorize('admin'),
   roadmapController.createRoadmapItem
 );
 
@@ -99,6 +100,7 @@ router.post(
 router.put(
   '/roadmap/:itemId',
   authenticate,
+  authorize('admin'),
   roadmapController.updateRoadmapItem
 );
 
@@ -106,6 +108,7 @@ router.put(
 router.delete(
   '/roadmap/:itemId',
   authenticate,
+  authorize('admin'),
   roadmapController.deleteRoadmapItem
 );
 
@@ -113,6 +116,7 @@ router.delete(
 router.post(
   '/roadmap/:itemId/updates',
   authenticate,
+  authorize('admin'),
   roadmapController.addUpdate
 );
 
@@ -120,6 +124,7 @@ router.post(
 router.post(
   '/roadmap/:itemId/link-feedback',
   authenticate,
+  authorize('admin'),
   roadmapController.linkFeedback
 );
 
@@ -127,6 +132,7 @@ router.post(
 router.delete(
   '/roadmap/:itemId/link-feedback/:feedbackId',
   authenticate,
+  authorize('admin'),
   roadmapController.unlinkFeedback
 );
 
@@ -134,6 +140,7 @@ router.delete(
 router.put(
   '/boards/:boardSlug/roadmap/reorder',
   authenticate,
+  authorize('admin'),
   roadmapController.reorderItems
 );
 

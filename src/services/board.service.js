@@ -2,26 +2,67 @@ const { supabaseAdmin } = require("../config/supabase.config");
 
 class BoardService {
   /**
-   * Get all boards - MULTI-TENANT VERSION
-   * Each user only sees boards they created
+   * Get all boards - ORGANIZATION-SCOPED VERSION with ROLE FILTERING
+   * Users see boards in their organization that match their role
    */
   async getAllBoards(userId, userRole) {
     try {
+      console.log('🔍 Board Service - getAllBoards:');
+      console.log('   User ID:', userId);
+      console.log('   User Role:', userRole);
+      
+      // Get user's current organization from users table
+      const { data: user, error: userError } = await supabaseAdmin
+        .from('users')
+        .select('current_organization_id, role')
+        .eq('id', userId)
+        .single();
+
+      if (userError || !user) {
+        console.error('❌ User not found:', userError?.message);
+        throw new Error('User not found');
+      }
+
+      console.log('   User current_organization_id:', user.current_organization_id);
+
+      // Get organization ID from current_organization_id
+      let organizationId = user.current_organization_id;
+      
+      // If no current org, return empty array instead of querying
+      if (!organizationId) {
+        console.log('   ⚠️ No current_organization_id, returning empty boards');
+        return [];
+      }
+
       let query = supabaseAdmin
         .from("boards")
         .select("*")
+        .eq('organization_id', organizationId)
         .order("created_at", { ascending: false });
 
-      // ✅ KEY CHANGE: Even admins only see boards they own
-      // Exception: Add a super_admin role later if needed
-      query = query.eq("owner_id", userId);
+      console.log(`✅ Filtering boards by organization: ${organizationId}`);
 
       const { data, error } = await query;
 
       if (error) throw error;
 
-      console.log(`✅ Retrieved ${data.length} boards for user ${userId}`);
-      return data;
+      // Apply role filtering client-side (RLS already handles most of this)
+      // But we'll add extra check for visibility
+      let filteredBoards = data || [];
+      if (user.role && filteredBoards.length > 0) {
+        filteredBoards = data.filter(board => {
+          // If board has no visibility restrictions, show it
+          if (!board.visible_to_roles || board.visible_to_roles.length === 0) {
+            return true;
+          }
+          // Check if user's role is in the allowed roles
+          return board.visible_to_roles.includes(user.role);
+        });
+        console.log(`✅ Filtered ${filteredBoards.length}/${data.length} boards by role: ${user.role}`);
+      }
+
+      console.log(`✅ Retrieved ${filteredBoards.length} boards for user ${userId}`);
+      return filteredBoards;
     } catch (error) {
       console.error("❌ Get boards error:", error);
       throw error;
@@ -29,10 +70,18 @@ class BoardService {
   }
 
   /**
-   * Get single board by slug - with owner check
+   * Get single board by slug - ORGANIZATION-SCOPED VERSION with ROLE CHECK
+   * Users can access boards in their organization if their role matches
    */
   async getBoardBySlug(slug, userId, userRole) {
     try {
+      // Get user's current organization and role
+      const { data: user } = await supabaseAdmin
+        .from('users')
+        .select('current_organization_id, role')
+        .eq('id', userId)
+        .single();
+
       const { data, error } = await supabaseAdmin
         .from("boards")
         .select("*")
@@ -46,16 +95,40 @@ class BoardService {
         throw error;
       }
 
-      // ✅ CHECK: User must be the owner to access
-      // For public boards, you can relax this if you want public access
-      if (data.owner_id !== userId) {
-        // If board is public, you might want to allow view access
-        // For now, only owner can access
-        throw new Error("Access denied to this board");
+      // Check access (multiple conditions):
+      // 1. If board is public, anyone can view
+      if (!data.is_private) {
+        // Still check role visibility for public boards
+        if (data.visible_to_roles && data.visible_to_roles.length > 0 && user.role) {
+          if (!data.visible_to_roles.includes(user.role)) {
+            throw new Error("This board is not visible to your role");
+          }
+        }
+        console.log(`✅ Retrieved public board: ${data.name}`);
+        return data;
       }
 
-      console.log(`✅ Retrieved board: ${data.name}`);
-      return data;
+      // 2. If user is in same organization as board
+      if (user && user.current_organization_id && data.organization_id === user.current_organization_id) {
+        // Check role visibility
+        if (data.visible_to_roles && data.visible_to_roles.length > 0 && user.role) {
+          if (!data.visible_to_roles.includes(user.role)) {
+            throw new Error("This board is not visible to your role");
+          }
+        }
+        console.log(`✅ Retrieved organization board: ${data.name}`);
+        return data;
+      }
+
+      // 3. If user is the owner
+      if (data.owner_id === userId) {
+        console.log(`✅ Retrieved owned board: ${data.name}`);
+        return data;
+      }
+
+      // 4. Otherwise, access denied
+      throw new Error("Access denied to this private board");
+
     } catch (error) {
       console.error("❌ Get board error:", error);
       throw error;
@@ -65,7 +138,7 @@ class BoardService {
   /**
    * Create new board
    */
-   async createBoard({ name, description, is_private, color, icon, category, owner_id }) {
+   async createBoard({ name, description, is_private, color, icon, category, owner_id, organization_id }) {
      try {
        const baseSlug = name
          .toLowerCase()
@@ -92,21 +165,26 @@ class BoardService {
          }
        }
 
+       const boardData = {
+         name,
+         slug,
+         description: description || null,
+         is_private: is_private || false,
+         category: category || 'General',
+         color: color || '#6366f1',
+         icon: icon || '💡',
+         owner_id,
+         post_count: 0
+       };
+
+       // Add organization_id if provided
+       if (organization_id) {
+         boardData.organization_id = organization_id;
+       }
+
        const { data, error } = await supabaseAdmin
          .from('boards')
-         .insert([
-           {
-             name,
-             slug,
-             description: description || null,
-             is_private: is_private || false,
-             category: category || 'General', // ✅ ADD CATEGORY
-             color: color || '#6366f1',
-             icon: icon || '💡',
-             owner_id,
-             post_count: 0
-           }
-         ])
+         .insert([boardData])
          .select()
          .single();
 

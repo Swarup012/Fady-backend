@@ -31,6 +31,9 @@ const commentValidation = [
 // All routes require authentication
 router.use(authenticate);
 
+// Get all posts (for admin dashboard)
+router.get("/posts", postController.getAllPosts);
+
 // Post routes
 router.get("/boards/:slug/posts", postController.getPostsByBoard);
 router.post(

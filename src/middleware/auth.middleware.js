@@ -1,4 +1,4 @@
-const { supabase } = require('../config/supabase.config');
+const { supabase, supabaseAdmin } = require('../config/supabase.config');
 const ResponseUtil = require('../utils/response.util');
 
 const authenticate = async (req, res, next) => {
@@ -19,8 +19,8 @@ const authenticate = async (req, res, next) => {
       return ResponseUtil.error(res, 'Invalid or expired token', 401);
     }
 
-    // Get user profile from database
-    const { data: profile, error: profileError } = await supabase
+    // Get user profile from database (use supabaseAdmin to bypass RLS)
+    const { data: profile, error: profileError } = await supabaseAdmin
       .from('users')
       .select('*')
       .eq('id', user.id)
@@ -29,6 +29,39 @@ const authenticate = async (req, res, next) => {
     if (profileError || !profile) {
       return ResponseUtil.error(res, 'User profile not found', 404);
     }
+
+    console.log('🔍 Middleware - User profile:', {
+      email: profile.email,
+      old_org_role: profile.organization_role,
+      current_org_id: profile.current_organization_id
+    });
+
+    // Get organization role from organization_members table
+    if (profile.current_organization_id) {
+      const { data: membership, error: membershipError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role, organization_id')
+        .eq('user_id', profile.id)
+        .eq('organization_id', profile.current_organization_id)
+        .single();
+      
+      console.log('🔍 Middleware - Membership query:', {
+        found: !!membership,
+        role: membership?.role,
+        error: membershipError?.message
+      });
+      
+      if (membership) {
+        // Override with current organization role from organization_members
+        profile.organization_role = membership.role;
+        profile.organization_id = membership.organization_id;
+        console.log('✅ Middleware - Updated org_role to:', membership.role);
+      } else {
+        console.log('❌ Middleware - No membership found, keeping old role:', profile.organization_role);
+      }
+    }
+    
+    console.log('📤 Middleware - Final profile.organization_role:', profile.organization_role);
 
     // Attach user and token to request
     req.user = profile;

@@ -3,9 +3,83 @@ const config = require('../config/env.config');
 
 class AuthService {
   /**
-   * Register a new user - SIMPLIFIED APPROACH
+   * Signup or Join Organization - Handles both new and existing users
+   * Similar to how Canny, Slack, etc. work
    */
-  async signup({ email, password, name }) {
+  async signupOrJoin({ email, password, name, organizationId = null, role = null }) {
+    try {
+      // Check if user already exists
+      const { data: existingUser, error: checkError } = await supabaseAdmin
+        .from('users')
+        .select('id, auth_id, email, name')
+        .eq('email', email)
+        .maybeSingle();
+
+      if (existingUser) {
+        console.log('👤 Existing user detected:', email);
+        
+        // User exists - verify password and add to organization
+        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+
+        if (authError) {
+          throw new Error('Invalid password. If you already have an account, please use your existing password or reset it.');
+        }
+
+        if (organizationId) {
+          // Check if already a member
+          const { data: existingMembership } = await supabaseAdmin
+            .from('organization_members')
+            .select('id')
+            .eq('user_id', existingUser.id)
+            .eq('organization_id', organizationId)
+            .single();
+
+          if (existingMembership) {
+            throw new Error('You are already a member of this organization. Please login instead.');
+          }
+
+          // Add to organization as member
+          await supabaseAdmin
+            .from('organization_members')
+            .insert({
+              user_id: existingUser.id,
+              organization_id: organizationId,
+              role: 'member'
+            });
+
+          // Update current organization if not set
+          await supabaseAdmin
+            .from('users')
+            .update({ current_organization_id: organizationId })
+            .eq('id', existingUser.id)
+            .is('current_organization_id', null);
+
+          console.log('✅ Existing user joined organization');
+        }
+
+        return {
+          action: 'joined_existing',
+          user: existingUser,
+          session: authData.session
+        };
+      }
+
+      // User doesn't exist - create new account
+      return await this.signup({ email, password, name, organizationId, role });
+
+    } catch (error) {
+      console.error('❌ Signup or join error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Register a new user - With organization role support
+   */
+  async signup({ email, password, name, organizationId = null, role = null }) {
     let authUserId = null;
     
     try {
@@ -48,15 +122,51 @@ class AuthService {
       console.log('📧 User email:', authData.user.email);
       console.log('📧 Email confirmed:', authData.user.email_confirmed_at ? 'Yes' : 'No (confirmation required)');
 
-      // Step 3: CREATE PROFILE DIRECTLY using admin client
-      // No foreign key constraint - just insert the UUID
+      // Step 3: Determine organization role for organization_members table
+      let organizationRole = 'member'; // Default to member
+      
+      if (organizationId) {
+        // When organizationId is provided via signup URL (subdomain signup),
+        // the user is JOINING an existing organization, so they should be a member.
+        // 
+        // Only exception: If organization exists but has NO members at all,
+        // AND the organization was just created (within last 5 seconds),
+        // then this might be the org creator coming from onboarding.
+        
+        const { data: org } = await supabaseAdmin
+          .from('organizations')
+          .select('created_at')
+          .eq('id', organizationId)
+          .single();
+        
+        const { count } = await supabaseAdmin
+          .from('organization_members')
+          .select('id', { count: 'exact', head: true })
+          .eq('organization_id', organizationId);
+        
+        const orgAge = org ? Date.now() - new Date(org.created_at).getTime() : Infinity;
+        const isNewOrg = orgAge < 5000; // Organization created within last 5 seconds
+        
+        // First user of a NEWLY created org becomes owner
+        // Everyone else joining existing org becomes member
+        if (count === 0 && isNewOrg) {
+          organizationRole = 'owner';
+          console.log(`📊 Organization role: owner (first user of newly created org)`);
+        } else {
+          organizationRole = 'member';
+          console.log(`📊 Organization role: member (joining existing org with ${count} members)`);
+        }
+      }
+
+      // Step 4: CREATE PROFILE (no organization_id in users table - using organization_members instead)
       console.log('📊 Creating user profile...');
       
       const profileData = {
         id: authUserId,
         email: email,
         name: name,
-        role: 'admin',
+        role: role || 'user', // User's job role (product_manager/founder/designer/etc)
+        current_organization_id: organizationId, // Current org they're viewing
         avatar_url: null,
         created_at: new Date().toISOString()
       };
@@ -65,7 +175,8 @@ class AuthService {
         id: authUserId, 
         email, 
         name, 
-        role: 'user' 
+        role: role || 'user',
+        current_organization_id: organizationId
       });
       
       const { data: profile, error: profileError } = await supabaseAdmin
@@ -95,9 +206,40 @@ class AuthService {
 
       console.log('✅ User profile created:', profile.id);
 
+      // Step 5: Add user to organization_members if organizationId provided
+      if (organizationId) {
+        console.log(`📋 Adding user to organization_members as ${organizationRole}...`);
+        
+        const { error: memberError } = await supabaseAdmin
+          .from('organization_members')
+          .insert({
+            user_id: profile.id,
+            organization_id: organizationId,
+            role: organizationRole
+          });
+
+        if (memberError) {
+          console.error('❌ Failed to add user to organization:', memberError);
+          // Don't throw - user is created, they just aren't in the org
+          console.warn('⚠️ User created but not added to organization');
+        } else {
+          console.log('✅ User added to organization');
+        }
+      }
+
+      // Step 6: Add organization_role to user object before returning
+      const userWithOrgRole = {
+        ...profile,
+        organization_role: organizationRole || null,
+        organization_id: organizationId || null
+      };
+      
+      console.log(`✅ Signup complete - organization_role: ${organizationRole}`);
+
       // Return response
       return {
-        user: profile,
+        action: 'created_new',
+        user: userWithOrgRole,
         session: authData.session, // Will be null if email confirmation is required
         emailConfirmationRequired: !authData.session
       };
@@ -109,9 +251,9 @@ class AuthService {
   }
 
   /**
-   * Login user
+   * Login user - with optional organization joining
    */
-  async login({ email, password }) {
+  async login({ email, password, organizationId = null, userRole = null }) {
     try {
       console.log('🔑 Attempting login for:', email);
       
@@ -144,9 +286,97 @@ class AuthService {
 
       console.log('✅ Login successful:', profile.email);
 
+      // If userRole provided and user doesn't have a role yet, update it
+      if (userRole && !profile.role) {
+        await supabaseAdmin
+          .from('users')
+          .update({ role: userRole })
+          .eq('id', profile.id);
+        
+        profile.role = userRole;
+        console.log(`✅ User role set to: ${userRole}`);
+      }
+
+      // If organizationId provided, add user to that organization
+      let joinedOrganization = false;
+      if (organizationId) {
+        console.log(`🏢 Attempting to join organization: ${organizationId}`);
+        
+        // Check if already a member
+        const { data: existingMembership } = await supabaseAdmin
+          .from('organization_members')
+          .select('id')
+          .eq('user_id', profile.id)
+          .eq('organization_id', organizationId)
+          .single();
+
+        if (existingMembership) {
+          console.log('ℹ️ User already a member of this organization');
+          // Update current organization
+          await supabaseAdmin
+            .from('users')
+            .update({ current_organization_id: organizationId })
+            .eq('id', profile.id);
+          
+          // Update profile object with new current_organization_id
+          profile.current_organization_id = organizationId;
+        } else {
+          // Add to organization as member
+          const { error: memberError } = await supabaseAdmin
+            .from('organization_members')
+            .insert({
+              user_id: profile.id,
+              organization_id: organizationId,
+              role: 'member'
+            });
+
+          if (memberError) {
+            console.error('❌ Failed to add user to organization:', memberError);
+          } else {
+            console.log('✅ User added to organization');
+            joinedOrganization = true;
+            
+            // Set as current organization
+            await supabaseAdmin
+              .from('users')
+              .update({ current_organization_id: organizationId })
+              .eq('id', profile.id);
+            
+            // Update profile object with new current_organization_id
+            profile.current_organization_id = organizationId;
+          }
+        }
+      }
+
+      // Get user's organization role from organization_members
+      let organizationRole = null;
+      let organizationIdForUser = profile.current_organization_id || organizationId;
+      
+      if (organizationIdForUser) {
+        const { data: membership } = await supabaseAdmin
+          .from('organization_members')
+          .select('role, organization_id')
+          .eq('user_id', profile.id)
+          .eq('organization_id', organizationIdForUser)
+          .single();
+        
+        if (membership) {
+          organizationRole = membership.role;
+          console.log(`✅ User organization role: ${organizationRole}`);
+        }
+      }
+
+      // Add organization_role to profile
+      const userWithOrgRole = {
+        ...profile,
+        organization_role: organizationRole,
+        organization_id: organizationIdForUser
+      };
+
       return {
-        user: profile,
-        session: data.session
+        user: userWithOrgRole,
+        session: data.session,
+        joinedOrganization
       };
     } catch (error) {
       throw error;
@@ -173,13 +403,13 @@ class AuthService {
   }
 
   /**
-   * Get current user
+   * Get current user with organization role
    */
   async getCurrentUser(userId) {
     try {
       const { data, error } = await supabaseAdmin
         .from('users')
-        .select('id, email, name, role, avatar_url, created_at')
+        .select('id, email, name, role, organization_role, organization_id, avatar_url, created_at')
         .eq('id', userId)
         .single();
 
@@ -203,7 +433,7 @@ class AuthService {
         .from('users')
         .update(allowedUpdates)
         .eq('id', userId)
-        .select('id, email, name, role, avatar_url, updated_at')
+        .select('id, email, name, role, organization_role, organization_id, avatar_url, updated_at')
         .single();
 
       if (error) throw error;

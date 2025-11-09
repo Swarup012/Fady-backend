@@ -6,6 +6,9 @@ const boardController = require("../controllers/board.controller");
 // Public boards
 router.get("/boards", boardController.getPublicBoards);
 
+// Single public board by slug
+router.get("/boards/:slug", boardController.getPublicBoardBySlug);
+
 // Public board posts
 router.get("/boards/:slug/posts", boardController.getPublicBoardPosts);
 

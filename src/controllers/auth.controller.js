@@ -1,17 +1,34 @@
 const authService = require('../services/auth.service');
 const ResponseUtil = require('../utils/response.util');
+const { supabaseAdmin } = require('../config/supabase.config');
 
 class AuthController {
   /**
-   * Register new user
+   * Register new user or join existing organization
    * POST /api/auth/signup
    */
   async signup(req, res, next) {
     try {
-      const { email, password, name } = req.body;
+      const { email, password, name, role, organizationId } = req.body;
 
-      const result = await authService.signup({ email, password, name });
+      const result = await authService.signupOrJoin({ email, password, name, role, organizationId });
 
+      // Check if this was an existing user joining
+      if (result.action === 'joined_existing') {
+        return ResponseUtil.success(
+          res,
+          'Successfully joined organization.',
+          {
+            user: result.user,
+            access_token: result.session.access_token,
+            refresh_token: result.session.refresh_token,
+            action: 'joined_existing'
+          },
+          200
+        );
+      }
+
+      // New user created
       // Handle case where email confirmation is required
       if (!result.session) {
         return ResponseUtil.success(
@@ -19,7 +36,8 @@ class AuthController {
           'User registered successfully. Please check your email to verify your account before logging in.',
           {
             user: result.user,
-            emailConfirmationRequired: true
+            emailConfirmationRequired: true,
+            action: 'created_new'
           },
           201
         );
@@ -33,12 +51,21 @@ class AuthController {
           user: result.user,
           access_token: result.session.access_token,
           refresh_token: result.session.refresh_token,
-          emailConfirmationRequired: false
+          emailConfirmationRequired: false,
+          action: 'created_new'
         },
         201
       );
     } catch (error) {
       console.error('Signup controller error:', error);
+      
+      if (error.message.includes('already a member')) {
+        return ResponseUtil.error(res, 'You are already a member of this organization. Please login instead.', 409);
+      }
+      
+      if (error.message.includes('Invalid password')) {
+        return ResponseUtil.error(res, 'Invalid password. If you already have an account, please use your existing password or reset it.', 401);
+      }
       
       if (error.message.includes('already registered') || error.message.includes('User already registered')) {
         return ResponseUtil.error(res, 'Email already registered', 409);
@@ -53,22 +80,27 @@ class AuthController {
   }
 
   /**
-   * Login user
+   * Login user - with optional organization joining
    * POST /api/auth/login
    */
   async login(req, res, next) {
     try {
-      const { email, password } = req.body;
+      const { email, password, organizationId, userRole } = req.body;
 
-      const result = await authService.login({ email, password });
+      const result = await authService.login({ email, password, organizationId, userRole });
 
       return ResponseUtil.success(res, 'Login successful', {
         user: result.user,
         access_token: result.session.access_token,
-        refresh_token: result.session.refresh_token
+        refresh_token: result.session.refresh_token,
+        joinedOrganization: result.joinedOrganization || false
       });
     } catch (error) {
       console.error('Login controller error:', error);
+      
+      if (error.message.includes('already a member')) {
+        return ResponseUtil.error(res, 'You are already a member of this organization.', 409);
+      }
       
       if (error.message.includes('Invalid') || 
           error.message.includes('credentials') || 
@@ -216,6 +248,98 @@ class AuthController {
         res,
         'If your email is not verified, a new verification email has been sent'
       );
+    }
+  }
+
+  /**
+   * Update user role (post-auth role selection)
+   * PUT /api/auth/update-role
+   */
+  async updateRole(req, res, next) {
+    try {
+      const { role, organizationId } = req.body;
+      const userId = req.user.id;
+
+      if (!role) {
+        return ResponseUtil.error(res, 'Role is required', 400);
+      }
+
+      console.log(`🔄 Updating role for user ${userId}: role=${role}, orgId=${organizationId}`);
+
+      // Update user's job role in users table
+      const { data: user, error: userError } = await supabaseAdmin
+        .from('users')
+        .update({ 
+          role,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId)
+        .select('id, email, name, role, current_organization_id')
+        .single();
+
+      if (userError) {
+        console.error('❌ Failed to update user role:', userError);
+        throw new Error('Failed to update role');
+      }
+
+      // If organizationId is provided, add user to that organization
+      if (organizationId) {
+        console.log(`🏢 Adding user to organization: ${organizationId}`);
+        
+        // Check if already a member
+        const { data: existingMembership } = await supabaseAdmin
+          .from('organization_members')
+          .select('id, role')
+          .eq('user_id', userId)
+          .eq('organization_id', organizationId)
+          .single();
+
+        if (!existingMembership) {
+          // Add to organization as member
+          const { error: memberError } = await supabaseAdmin
+            .from('organization_members')
+            .insert({
+              user_id: userId,
+              organization_id: organizationId,
+              role: 'member' // Organization role, not job role
+            });
+
+          if (memberError) {
+            console.error('❌ Failed to add user to organization:', memberError);
+          } else {
+            console.log('✅ User added to organization');
+            
+            // Set as current organization if user doesn't have one
+            if (!user.current_organization_id) {
+              await supabaseAdmin
+                .from('users')
+                .update({ current_organization_id: organizationId })
+                .eq('id', userId);
+              
+              user.current_organization_id = organizationId;
+            }
+          }
+        } else {
+          console.log('ℹ️ User already a member of this organization');
+          
+          // Set as current organization
+          await supabaseAdmin
+            .from('users')
+            .update({ current_organization_id: organizationId })
+            .eq('id', userId);
+          
+          user.current_organization_id = organizationId;
+        }
+      }
+
+      console.log('✅ Role updated successfully');
+
+      return ResponseUtil.success(res, 'Role updated successfully', {
+        user
+      });
+    } catch (error) {
+      console.error('Update role controller error:', error);
+      next(error);
     }
   }
 }
