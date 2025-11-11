@@ -275,7 +275,7 @@ class AuthService {
       // Get user profile
       const { data: profile, error: profileError } = await supabaseAdmin
         .from('users')
-        .select('id, email, name, role, avatar_url, created_at')
+        .select('id, email, name, role, current_organization_id, avatar_url, created_at')
         .eq('id', data.user.id)
         .single();
 
@@ -285,6 +285,7 @@ class AuthService {
       }
 
       console.log('✅ Login successful:', profile.email);
+      console.log('🔍 User current_organization_id:', profile.current_organization_id);
 
       // If userRole provided and user doesn't have a role yet, update it
       if (userRole && !profile.role) {
@@ -352,18 +353,35 @@ class AuthService {
       let organizationRole = null;
       let organizationIdForUser = profile.current_organization_id || organizationId;
       
+      console.log('🔍 Looking up organization role:', {
+        userId: profile.id,
+        organizationIdForUser,
+        fromProfile: profile.current_organization_id,
+        fromParam: organizationId
+      });
+      
       if (organizationIdForUser) {
-        const { data: membership } = await supabaseAdmin
+        const { data: membership, error: membershipError } = await supabaseAdmin
           .from('organization_members')
           .select('role, organization_id')
           .eq('user_id', profile.id)
           .eq('organization_id', organizationIdForUser)
           .single();
         
+        console.log('🔍 Membership query result:', {
+          found: !!membership,
+          role: membership?.role,
+          error: membershipError?.message
+        });
+        
         if (membership) {
           organizationRole = membership.role;
           console.log(`✅ User organization role: ${organizationRole}`);
+        } else {
+          console.log('❌ No membership found in organization_members table');
         }
+      } else {
+        console.log('⚠️ No organizationIdForUser - user not in any organization');
       }
 
       // Add organization_role to profile
@@ -372,6 +390,15 @@ class AuthService {
         organization_role: organizationRole,
         organization_id: organizationIdForUser
       };
+
+      console.log('📤 Returning user object:', {
+        id: userWithOrgRole.id,
+        email: userWithOrgRole.email,
+        role: userWithOrgRole.role,
+        organization_role: userWithOrgRole.organization_role,
+        organization_id: userWithOrgRole.organization_id,
+        current_organization_id: userWithOrgRole.current_organization_id
+      });
 
       return {
         user: userWithOrgRole,
