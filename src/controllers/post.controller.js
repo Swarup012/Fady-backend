@@ -12,8 +12,16 @@ class PostController {
       const userId = req.user.id;
       const organizationId = req.user.organization_id;
 
+      console.log('📋 getAllPosts - User context:', {
+        userId,
+        organizationId,
+        current_organization_id: req.user.current_organization_id,
+        organization_role: req.user.organization_role
+      });
+
       if (!organizationId) {
-        return ResponseUtil.error(res, "User not associated with an organization", 400);
+        console.error('❌ getAllPosts - No organization_id found for user:', userId);
+        return ResponseUtil.error(res, "User not associated with an organization. Please complete onboarding or join an organization.", 400);
       }
 
       const posts = await postService.getAllPosts(userId, organizationId);

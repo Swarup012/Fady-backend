@@ -19,6 +19,16 @@ const organizationService = {
    */
   async createOrganization({ name, subdomain, description, industry, company_size, website, ownerId }) {
     try {
+      console.log('🏢 createOrganization called with:', {
+        name,
+        subdomain,
+        description: description?.substring(0, 50),
+        industry,
+        company_size,
+        website,
+        ownerId: ownerId?.substring(0, 8)
+      });
+
       // 1. Generate subdomain if not provided
       let finalSubdomain = subdomain;
       if (!finalSubdomain) {
@@ -40,10 +50,15 @@ const organizationService = {
         }
       }
 
+      console.log('🔤 Final subdomain after generation:', finalSubdomain);
+
       // 2. Validate subdomain format
       const subdomainRegex = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+      if (!finalSubdomain) {
+        throw new Error('Subdomain is required. Company name must be provided.');
+      }
       if (!subdomainRegex.test(finalSubdomain)) {
-        throw new Error('Invalid subdomain format. Use lowercase letters, numbers, and hyphens only.');
+        throw new Error(`Invalid subdomain format: "${finalSubdomain}". Use lowercase letters, numbers, and hyphens only.`);
       }
 
       if (finalSubdomain.length < 3 || finalSubdomain.length > 63) {
@@ -89,6 +104,7 @@ const organizationService = {
             user_id: ownerId,
             organization_id: organization.id,
             role: 'owner',
+            job_role: 'founder', // Default job_role for organization creator
             joined_at: new Date().toISOString(),
           });
 
@@ -99,18 +115,16 @@ const organizationService = {
           throw memberError;
         }
 
-        // 6. Update user's current_organization_id
+        // 6. Update user's current_organization_id only (role is in organization_members)
         const { error: userError } = await supabaseAdmin
           .from('users')
           .update({
-            organization_id: organization.id,
-            current_organization_id: organization.id,
-            organization_role: 'owner',
+            current_organization_id: organization.id
           })
           .eq('id', ownerId);
 
         if (userError) {
-          console.error('❌ Failed to update user:', userError);
+          console.error('❌ Failed to update user current_organization_id:', userError);
           // Don't rollback - user is already in organization_members
         }
         
@@ -351,6 +365,7 @@ const organizationService = {
           user_id: userId,
           organization_id: organization.id,
           role: 'owner',
+          job_role: 'founder', // Default job_role for organization creator
           joined_at: new Date().toISOString()
         });
 
@@ -440,6 +455,8 @@ const organizationService = {
    */
   async getOrganizationMembers(organizationId, userId) {
     try {
+      console.log('🔍 Fetching members for organization:', organizationId, 'requested by user:', userId);
+      
       // Verify user is in organization using organization_members table
       const { data: membership, error: memberError } = await supabaseAdmin
         .from('organization_members')
@@ -449,28 +466,36 @@ const organizationService = {
         .single();
 
       if (memberError || !membership) {
+        console.error('❌ User not member of organization:', memberError);
         throw new Error('Unauthorized: User not in organization');
       }
+
+      console.log('✅ User is member with role:', membership.role);
 
       // Fetch all members from organization_members table
       const { data, error } = await supabaseAdmin
         .from('organization_members')
         .select(`
           role,
+          job_role,
           joined_at,
           users!organization_members_user_id_fkey (
             id,
             name,
             email,
             avatar_url,
-            role,
             created_at
           )
         `)
         .eq('organization_id', organizationId)
         .order('joined_at', { ascending: true });
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ Error fetching members:', error);
+        throw error;
+      }
+
+      console.log('✅ Fetched', data?.length || 0, 'members from database');
 
       // Transform data to match expected format
       const members = data.map(item => ({
@@ -478,12 +503,13 @@ const organizationService = {
         name: item.users.name,
         email: item.users.email,
         avatar_url: item.users.avatar_url,
-        organization_role: item.role,
-        user_role: item.users.role, // Their job role (designer, PM, etc.)
+        organization_role: item.role, // Permission role: owner/admin/member
+        job_role: item.job_role, // Job role: founder/designer/developer/etc
         created_at: item.users.created_at,
         joined_at: item.joined_at
       }));
 
+      console.log('✅ Returning', members.length, 'transformed members');
       return members;
     } catch (error) {
       console.error('❌ Get organization members error:', error);

@@ -85,62 +85,62 @@ router.delete(
 );
 
 // ============================================
-// ADMIN ONLY ROUTES
+// ADMIN & OWNER ROUTES
 // ============================================
 
-// Create roadmap item (Admin only)
+// Create roadmap item (Admin & Owner)
 router.post(
   '/boards/:boardSlug/roadmap',
   authenticate,
-  authorize('admin'),
+  authorize(['admin', 'owner']),
   roadmapController.createRoadmapItem
 );
 
-// Update roadmap item (Admin only)
+// Update roadmap item (Admin & Owner)
 router.put(
   '/roadmap/:itemId',
   authenticate,
-  authorize('admin'),
+  authorize(['admin', 'owner']),
   roadmapController.updateRoadmapItem
 );
 
-// Delete roadmap item (Admin only)
+// Delete roadmap item (Admin & Owner)
 router.delete(
   '/roadmap/:itemId',
   authenticate,
-  authorize('admin'),
+  authorize(['admin', 'owner']),
   roadmapController.deleteRoadmapItem
 );
 
-// Add update to roadmap item (Admin only)
+// Add update to roadmap item (Admin & Owner)
 router.post(
   '/roadmap/:itemId/updates',
   authenticate,
-  authorize('admin'),
+  authorize(['admin', 'owner']),
   roadmapController.addUpdate
 );
 
-// Link feedback to roadmap item (Admin only)
+// Link feedback to roadmap item (Admin & Owner)
 router.post(
   '/roadmap/:itemId/link-feedback',
   authenticate,
-  authorize('admin'),
+  authorize(['admin', 'owner']),
   roadmapController.linkFeedback
 );
 
-// Unlink feedback from roadmap item (Admin only)
+// Unlink feedback from roadmap item (Admin & Owner)
 router.delete(
   '/roadmap/:itemId/link-feedback/:feedbackId',
   authenticate,
-  authorize('admin'),
+  authorize(['admin', 'owner']),
   roadmapController.unlinkFeedback
 );
 
-// Reorder roadmap items (Admin only)
+// Reorder roadmap items (Admin & Owner)
 router.put(
   '/boards/:boardSlug/roadmap/reorder',
   authenticate,
-  authorize('admin'),
+  authorize(['admin', 'owner']),
   roadmapController.reorderItems
 );
 

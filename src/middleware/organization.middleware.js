@@ -18,6 +18,10 @@ const injectOrganization = async (req, res, next) => {
   try {
     // Extract subdomain from headers (set by Next.js middleware)
     const subdomain = req.headers['x-subdomain'];
+    
+    if (subdomain) {
+      console.log(`🔍 Organization middleware - Subdomain from header: ${subdomain}`);
+    }
 
     // CASE 1: Subdomain provided - load organization by subdomain
     if (subdomain) {
@@ -44,6 +48,38 @@ const injectOrganization = async (req, res, next) => {
 
         if (memberError || !membership) {
           console.warn(`⚠️ User ${req.user.email} tried to access ${organization.name} but is not a member`);
+          
+          // Instead of blocking, fall back to user's current organization
+          console.log(`🔄 Falling back to user's current organization...`);
+          const { data: user } = await supabaseAdmin
+            .from('users')
+            .select('current_organization_id')
+            .eq('id', req.user.id)
+            .single();
+
+          if (user?.current_organization_id) {
+            const { data: currentOrg } = await supabaseAdmin
+              .from('organizations')
+              .select('*')
+              .eq('id', user.current_organization_id)
+              .single();
+
+            if (currentOrg) {
+              const { data: currentMembership } = await supabaseAdmin
+                .from('organization_members')
+                .select('role')
+                .eq('user_id', req.user.id)
+                .eq('organization_id', currentOrg.id)
+                .single();
+
+              req.organization = currentOrg;
+              req.organizationRole = currentMembership?.role;
+              console.log(`✅ Using user's current org: ${currentOrg.name} as ${currentMembership?.role}`);
+              return next();
+            }
+          }
+
+          // If no fallback available, return error
           return res.status(403).json({
             success: false,
             error: 'You do not have access to this organization',

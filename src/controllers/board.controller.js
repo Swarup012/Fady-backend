@@ -7,15 +7,16 @@ class BoardController {
   async getAllBoards(req, res, next) {
     try {
       const userId = req.user.id;
-      const userRole = req.user.role;
+      const userOrgRole = req.user.organization_role; // owner/admin/member
+      const jobRole = req.user.job_role; // founder/designer/developer/etc
 
       console.log('🎯 getAllBoards controller:');
       console.log('   User ID:', userId);
-      console.log('   User Role:', userRole);
-      console.log('   User Org Role:', req.user.organization_role);
+      console.log('   Organization Role:', userOrgRole);
+      console.log('   Job Role:', jobRole);
       console.log('   Current Org ID:', req.user.current_organization_id);
 
-      const boards = await boardService.getAllBoards(userId, userRole);
+      const boards = await boardService.getAllBoards(userId, jobRole);
 
       return ResponseUtil.success(res, "Boards retrieved successfully", {
         boards,
@@ -40,9 +41,9 @@ class BoardController {
     try {
       const { slug } = req.params;
       const userId = req.user.id;
-      const userRole = req.user.role;
+      const jobRole = req.user.job_role; // Use job_role instead of role
 
-      const board = await boardService.getBoardBySlug(slug, userId, userRole);
+      const board = await boardService.getBoardBySlug(slug, userId, jobRole);
 
       return ResponseUtil.success(res, "Board retrieved successfully", {
         board,
@@ -316,9 +317,10 @@ class BoardController {
 
   async updateBoard(req, res, next) {
     try {
-      // ✅ ADMIN ONLY CHECK
-      if (req.user.role !== "admin") {
-        return ResponseUtil.error(res, "Only admins can update boards", 403);
+      // ✅ ADMIN/OWNER ONLY CHECK - Check organization_role instead of global role
+      const orgRole = req.user.organization_role;
+      if (orgRole !== "owner" && orgRole !== "admin") {
+        return ResponseUtil.error(res, "Only organization owners and admins can update boards", 403);
       }
 
       const errors = validationResult(req);
@@ -329,13 +331,13 @@ class BoardController {
       const { id } = req.params;
       const updates = req.body;
       const userId = req.user.id;
-      const userRole = req.user.role;
+      const jobRole = req.user.job_role;
 
       const board = await boardService.updateBoard(
         id,
         updates,
         userId,
-        userRole,
+        jobRole,
       );
 
       return ResponseUtil.success(res, "Board updated successfully", {
@@ -355,16 +357,17 @@ class BoardController {
 
   async deleteBoard(req, res, next) {
     try {
-      // ✅ ADMIN ONLY CHECK
-      if (req.user.role !== "admin") {
-        return ResponseUtil.error(res, "Only admins can delete boards", 403);
+      // ✅ ADMIN/OWNER ONLY CHECK - Check organization_role instead of global role
+      const orgRole = req.user.organization_role;
+      if (orgRole !== "owner" && orgRole !== "admin") {
+        return ResponseUtil.error(res, "Only organization owners and admins can delete boards", 403);
       }
 
       const { id } = req.params;
       const userId = req.user.id;
-      const userRole = req.user.role;
+      const jobRole = req.user.job_role;
 
-      await boardService.deleteBoard(id, userId, userRole);
+      await boardService.deleteBoard(id, userId, jobRole);
 
       return ResponseUtil.success(res, "Board deleted successfully");
     } catch (error) {

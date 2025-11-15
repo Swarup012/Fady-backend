@@ -5,16 +5,16 @@ class BoardService {
    * Get all boards - ORGANIZATION-SCOPED VERSION with ROLE FILTERING
    * Users see boards in their organization that match their role
    */
-  async getAllBoards(userId, userRole) {
+  async getAllBoards(userId, jobRole) {
     try {
       console.log('🔍 Board Service - getAllBoards:');
       console.log('   User ID:', userId);
-      console.log('   User Role:', userRole);
+      console.log('   Job Role:', jobRole);
       
       // Get user's current organization from users table
       const { data: user, error: userError } = await supabaseAdmin
         .from('users')
-        .select('current_organization_id, role')
+        .select('current_organization_id')
         .eq('id', userId)
         .single();
 
@@ -46,19 +46,19 @@ class BoardService {
 
       if (error) throw error;
 
-      // Apply role filtering client-side (RLS already handles most of this)
-      // But we'll add extra check for visibility
+      // Apply job role filtering client-side (RLS already handles most of this)
+      // But we'll add extra check for visibility based on job_role
       let filteredBoards = data || [];
-      if (user.role && filteredBoards.length > 0) {
+      if (jobRole && filteredBoards.length > 0) {
         filteredBoards = data.filter(board => {
           // If board has no visibility restrictions, show it
           if (!board.visible_to_roles || board.visible_to_roles.length === 0) {
             return true;
           }
-          // Check if user's role is in the allowed roles
-          return board.visible_to_roles.includes(user.role);
+          // Check if user's job_role is in the allowed roles
+          return board.visible_to_roles.includes(jobRole);
         });
-        console.log(`✅ Filtered ${filteredBoards.length}/${data.length} boards by role: ${user.role}`);
+        console.log(`✅ Filtered ${filteredBoards.length}/${data.length} boards by job_role: ${jobRole}`);
       }
 
       console.log(`✅ Retrieved ${filteredBoards.length} boards for user ${userId}`);

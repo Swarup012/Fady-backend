@@ -99,58 +99,76 @@ const userService = {
   async completeOnboarding(userId, onboardingData) {
     // Start a transaction-like operation
     try {
-      // 1. Create organization from company info
+      // 1. Create organization from company info (or default if skipped)
       let organization = null;
-      if (onboardingData.companyName) {
-        try {
-          console.log('🏢 Creating organization:', {
-            name: onboardingData.companyName,
-            subdomain: onboardingData.subdomain,
-            ownerId: userId
-          });
+      
+      // If no company name provided, get user's email for default org name
+      let companyName = onboardingData.companyName;
+      if (!companyName) {
+        const { data: user } = await supabase
+          .from('users')
+          .select('email, name')
+          .eq('id', userId)
+          .single();
+        
+        // Create default organization name from user's name or email
+        companyName = user?.name ? `${user.name}'s Workspace` : `My Workspace`;
+        console.log(`⚠️ No company name provided, using default: ${companyName}`);
+      }
+      
+      try {
+        console.log('🏢 Creating organization with data:', {
+          name: companyName,
+          subdomain: onboardingData.subdomain,
+          industry: onboardingData.industry,
+          company_size: onboardingData.companySize,
+          website: onboardingData.companyWebsite,
+          ownerId: userId
+        });
 
-          organization = await organizationService.createOrganization({
-            name: onboardingData.companyName,
-            subdomain: onboardingData.subdomain, // Optional: user can customize
-            description: onboardingData.description,
-            industry: onboardingData.industry,
-            company_size: onboardingData.companySize,
-            website: onboardingData.companyWebsite,
-            ownerId: userId,
-          });
-          
-          console.log(`✅ Created organization: ${organization.name} (${organization.subdomain}) with ID: ${organization.id}`);
-        } catch (orgError) {
-          console.error('❌ Failed to create organization:', {
-            error: orgError.message,
-            stack: orgError.stack,
-            companyName: onboardingData.companyName
-          });
-          // If organization creation fails, continue without it
-          // User can create it later from settings
-        }
+        organization = await organizationService.createOrganization({
+          name: companyName,
+          subdomain: onboardingData.subdomain, // Optional: user can customize
+          description: onboardingData.description,
+          industry: onboardingData.industry,
+          company_size: onboardingData.companySize,
+          website: onboardingData.companyWebsite,
+          ownerId: userId,
+        });
+        
+        console.log(`✅ Organization created successfully:`, {
+          id: organization.id,
+          name: organization.name,
+          subdomain: organization.subdomain
+        });
+      } catch (orgError) {
+        console.error('❌ CRITICAL: Failed to create organization:', {
+          error: orgError.message,
+          code: orgError.code,
+          details: orgError.details,
+          hint: orgError.hint,
+          stack: orgError.stack,
+          companyName: companyName,
+          ownerId: userId
+        });
+        // If organization creation fails, this is critical - throw error
+        throw new Error(`Failed to create organization: ${orgError.message}`);
       }
 
       // 2. Update user with onboarding data
+      // Note: role, company fields removed - they're in organization_members and organizations tables now
       const updateData = {
         onboarding_completed: true,
         onboarding_step: 6, // Updated from 8 to 6 (removed role step)
-        // Don't overwrite role - it's already set via post-auth modal
-        company_name: onboardingData.companyName,
-        company_size: onboardingData.companySize,
-        industry: onboardingData.industry,
-        company_website: onboardingData.companyWebsite,
         current_process: onboardingData.currentProcess,
         goals: onboardingData.goals,
         onboarding_data: onboardingData,
         updated_at: new Date().toISOString(),
       };
 
-      // Add organization_id if organization was created
+      // Set current_organization_id if organization was created
       if (organization) {
-        updateData.organization_id = organization.id;
-        updateData.current_organization_id = organization.id; // Set as current org
-        updateData.organization_role = 'owner';
+        updateData.current_organization_id = organization.id;
       }
 
       const { data: user, error: userError } = await supabase
@@ -206,8 +224,34 @@ const userService = {
         console.log('Team invites to send:', onboardingData.teamInvites);
       }
 
+      // 5. Fetch organization_role and job_role from organization_members table
+      let organizationRole = null;
+      let jobRole = null;
+      if (organization) {
+        const { data: membership } = await supabase
+          .from('organization_members')
+          .select('role, job_role')
+          .eq('user_id', userId)
+          .eq('organization_id', organization.id)
+          .single();
+        
+        if (membership) {
+          organizationRole = membership.role;
+          jobRole = membership.job_role;
+          console.log(`✅ User role in org: ${organizationRole}, job_role: ${jobRole}`);
+        }
+      }
+
+      // 6. Return user with organization roles
+      const userWithRoles = {
+        ...user,
+        organization_role: organizationRole,
+        job_role: jobRole,
+        organization_id: organization?.id || null
+      };
+
       return {
-        user,
+        user: userWithRoles,
         organization,
         board,
         invitesSent: onboardingData.teamInvites?.length || 0,

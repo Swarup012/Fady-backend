@@ -11,6 +11,8 @@ class AuthController {
     try {
       const { email, password, name, role, organizationId } = req.body;
 
+      console.log('📝 Signup request:', { email, name, role, organizationId });
+
       const result = await authService.signupOrJoin({ email, password, name, role, organizationId });
 
       // Check if this was an existing user joining
@@ -252,90 +254,117 @@ class AuthController {
   }
 
   /**
-   * Update user role (post-auth role selection)
+   * Update user job role (post-auth role selection)
    * PUT /api/auth/update-role
+   * Note: This updates job_role in organization_members, not users table
    */
   async updateRole(req, res, next) {
     try {
-      const { role, organizationId } = req.body;
+      const { role, organizationId: providedOrgId } = req.body;
       const userId = req.user.id;
 
+      console.log('📝 updateRole request:', {
+        role,
+        providedOrgId,
+        userId,
+        currentOrgId: req.user.current_organization_id,
+        userOrgRole: req.user.organization_role
+      });
+
       if (!role) {
+        console.error('❌ Missing role in request');
         return ResponseUtil.error(res, 'Role is required', 400);
       }
 
-      console.log(`🔄 Updating role for user ${userId}: role=${role}, orgId=${organizationId}`);
+      // Use provided organizationId or fall back to current_organization_id
+      const organizationId = providedOrgId || req.user.current_organization_id;
 
-      // Update user's job role in users table
-      const { data: user, error: userError } = await supabaseAdmin
-        .from('users')
-        .update({ 
-          role,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userId)
-        .select('id, email, name, role, current_organization_id')
+      if (!organizationId) {
+        console.error('❌ No organization ID available (neither provided nor current_organization_id)');
+        return ResponseUtil.error(res, 'Organization ID is required. Please join or create an organization first.', 400);
+      }
+
+      console.log(`🔄 Updating job_role for user ${userId}: job_role=${role}, orgId=${organizationId}`);
+
+      // Check if already a member
+      const { data: existingMembership } = await supabaseAdmin
+        .from('organization_members')
+        .select('id, role, job_role')
+        .eq('user_id', userId)
+        .eq('organization_id', organizationId)
         .single();
 
-      if (userError) {
-        console.error('❌ Failed to update user role:', userError);
-        throw new Error('Failed to update role');
-      }
-
-      // If organizationId is provided, add user to that organization
-      if (organizationId) {
-        console.log(`🏢 Adding user to organization: ${organizationId}`);
-        
-        // Check if already a member
-        const { data: existingMembership } = await supabaseAdmin
+      if (!existingMembership) {
+        // Add to organization as member with job_role
+        const { error: memberError } = await supabaseAdmin
           .from('organization_members')
-          .select('id, role')
-          .eq('user_id', userId)
-          .eq('organization_id', organizationId)
-          .single();
+          .insert({
+            user_id: userId,
+            organization_id: organizationId,
+            role: 'member', // Permission role
+            job_role: role  // Job role (founder/designer/etc)
+          });
 
-        if (!existingMembership) {
-          // Add to organization as member
-          const { error: memberError } = await supabaseAdmin
-            .from('organization_members')
-            .insert({
-              user_id: userId,
-              organization_id: organizationId,
-              role: 'member' // Organization role, not job role
-            });
-
-          if (memberError) {
-            console.error('❌ Failed to add user to organization:', memberError);
-          } else {
-            console.log('✅ User added to organization');
-            
-            // Set as current organization if user doesn't have one
-            if (!user.current_organization_id) {
-              await supabaseAdmin
-                .from('users')
-                .update({ current_organization_id: organizationId })
-                .eq('id', userId);
-              
-              user.current_organization_id = organizationId;
-            }
-          }
-        } else {
-          console.log('ℹ️ User already a member of this organization');
-          
-          // Set as current organization
-          await supabaseAdmin
-            .from('users')
-            .update({ current_organization_id: organizationId })
-            .eq('id', userId);
-          
-          user.current_organization_id = organizationId;
+        if (memberError) {
+          console.error('❌ Failed to add user to organization:', memberError);
+          throw new Error('Failed to update role');
         }
+        
+        console.log('✅ User added to organization with job_role:', role);
+        
+        // Set as current organization
+        await supabaseAdmin
+          .from('users')
+          .update({ current_organization_id: organizationId })
+          .eq('id', userId);
+      } else {
+        // Update job_role for existing member
+        const { error: updateError } = await supabaseAdmin
+          .from('organization_members')
+          .update({ job_role: role })
+          .eq('user_id', userId)
+          .eq('organization_id', organizationId);
+
+        if (updateError) {
+          console.error('❌ Failed to update job_role:', updateError);
+          throw new Error('Failed to update role');
+        }
+        
+        console.log('✅ Job role updated to:', role);
+        
+        // Set as current organization
+        await supabaseAdmin
+          .from('users')
+          .update({ current_organization_id: organizationId })
+          .eq('id', userId);
       }
+
+      // Get updated user profile
+      const { data: user } = await supabaseAdmin
+        .from('users')
+        .select('id, email, name, current_organization_id')
+        .eq('id', userId)
+        .single();
+
+      // Get organization membership with roles
+      const { data: membership } = await supabaseAdmin
+        .from('organization_members')
+        .select('role, job_role')
+        .eq('user_id', userId)
+        .eq('organization_id', organizationId)
+        .single();
+
+      const userWithRoles = {
+        ...user,
+        organization_role: membership?.role,
+        job_role: membership?.job_role,
+        organization_id: organizationId
+      };
 
       console.log('✅ Role updated successfully');
 
       return ResponseUtil.success(res, 'Role updated successfully', {
-        user
+        user: userWithRoles
       });
     } catch (error) {
       console.error('Update role controller error:', error);

@@ -158,14 +158,13 @@ class AuthService {
         }
       }
 
-      // Step 4: CREATE PROFILE (no organization_id in users table - using organization_members instead)
+      // Step 4: CREATE PROFILE (no role/organization_id/organization_role in users table)
       console.log('📊 Creating user profile...');
       
       const profileData = {
         id: authUserId,
         email: email,
         name: name,
-        role: role || 'user', // User's job role (product_manager/founder/designer/etc)
         current_organization_id: organizationId, // Current org they're viewing
         avatar_url: null,
         created_at: new Date().toISOString()
@@ -174,15 +173,14 @@ class AuthService {
       console.log('🔍 Attempting insert with data:', { 
         id: authUserId, 
         email, 
-        name, 
-        role: role || 'user',
+        name,
         current_organization_id: organizationId
       });
       
       const { data: profile, error: profileError } = await supabaseAdmin
         .from('users')
         .insert([profileData])
-        .select('id, email, name, role, created_at')
+        .select('id, email, name, current_organization_id, created_at')
         .single();
 
       if (profileError) {
@@ -207,6 +205,7 @@ class AuthService {
       console.log('✅ User profile created:', profile.id);
 
       // Step 5: Add user to organization_members if organizationId provided
+      let jobRole = null;
       if (organizationId) {
         console.log(`📋 Adding user to organization_members as ${organizationRole}...`);
         
@@ -215,7 +214,8 @@ class AuthService {
           .insert({
             user_id: profile.id,
             organization_id: organizationId,
-            role: organizationRole
+            role: organizationRole, // Permission role: owner/admin/member
+            job_role: role || null  // Job role: founder/designer/developer/etc
           });
 
         if (memberError) {
@@ -223,18 +223,20 @@ class AuthService {
           // Don't throw - user is created, they just aren't in the org
           console.warn('⚠️ User created but not added to organization');
         } else {
-          console.log('✅ User added to organization');
+          console.log('✅ User added to organization with job_role:', role);
+          jobRole = role;
         }
       }
 
-      // Step 6: Add organization_role to user object before returning
+      // Step 6: Add organization_role and job_role to user object before returning
       const userWithOrgRole = {
         ...profile,
         organization_role: organizationRole || null,
-        organization_id: organizationId || null
+        organization_id: organizationId || null,
+        job_role: jobRole
       };
       
-      console.log(`✅ Signup complete - organization_role: ${organizationRole}`);
+      console.log(`✅ Signup complete - organization_role: ${organizationRole}, job_role: ${jobRole}`);
 
       // Return response
       return {
@@ -272,10 +274,10 @@ class AuthService {
         throw new Error('Email not confirmed. Please check your email and verify your account.');
       }
 
-      // Get user profile
+      // Get user profile (no role field anymore - it's in organization_members)
       const { data: profile, error: profileError } = await supabaseAdmin
         .from('users')
-        .select('id, email, name, role, current_organization_id, avatar_url, created_at')
+        .select('id, email, name, current_organization_id, avatar_url, created_at')
         .eq('id', data.user.id)
         .single();
 
@@ -286,17 +288,6 @@ class AuthService {
 
       console.log('✅ Login successful:', profile.email);
       console.log('🔍 User current_organization_id:', profile.current_organization_id);
-
-      // If userRole provided and user doesn't have a role yet, update it
-      if (userRole && !profile.role) {
-        await supabaseAdmin
-          .from('users')
-          .update({ role: userRole })
-          .eq('id', profile.id);
-        
-        profile.role = userRole;
-        console.log(`✅ User role set to: ${userRole}`);
-      }
 
       // If organizationId provided, add user to that organization
       let joinedOrganization = false;
@@ -314,34 +305,50 @@ class AuthService {
         if (existingMembership) {
           console.log('ℹ️ User already a member of this organization');
           // Update current organization
-          await supabaseAdmin
+          const { error: updateError } = await supabaseAdmin
             .from('users')
             .update({ current_organization_id: organizationId })
             .eq('id', profile.id);
+          
+          if (updateError) {
+            console.error('❌ Failed to update current_organization_id:', updateError);
+          } else {
+            console.log('✅ Updated current_organization_id to:', organizationId);
+          }
           
           // Update profile object with new current_organization_id
           profile.current_organization_id = organizationId;
         } else {
           // Add to organization as member
+          // Default job_role to 'other' if not provided (to satisfy NOT NULL constraint)
+          const defaultJobRole = userRole || 'other';
+          
           const { error: memberError } = await supabaseAdmin
             .from('organization_members')
             .insert({
               user_id: profile.id,
               organization_id: organizationId,
-              role: 'member'
+              role: 'member',
+              job_role: defaultJobRole
             });
 
           if (memberError) {
             console.error('❌ Failed to add user to organization:', memberError);
           } else {
-            console.log('✅ User added to organization');
+            console.log('✅ User added to organization with job_role:', userRole);
             joinedOrganization = true;
             
             // Set as current organization
-            await supabaseAdmin
+            const { error: updateError } = await supabaseAdmin
               .from('users')
               .update({ current_organization_id: organizationId })
               .eq('id', profile.id);
+            
+            if (updateError) {
+              console.error('❌ Failed to update current_organization_id:', updateError);
+            } else {
+              console.log('✅ Updated current_organization_id to:', organizationId);
+            }
             
             // Update profile object with new current_organization_id
             profile.current_organization_id = organizationId;
@@ -353,17 +360,19 @@ class AuthService {
       let organizationRole = null;
       let organizationIdForUser = profile.current_organization_id || organizationId;
       
-      console.log('🔍 Looking up organization role:', {
+      console.log('🔍 Looking up organization role AFTER updates:', {
         userId: profile.id,
         organizationIdForUser,
-        fromProfile: profile.current_organization_id,
-        fromParam: organizationId
+        'profile.current_organization_id': profile.current_organization_id,
+        'passed organizationId': organizationId,
+        joinedOrganization
       });
       
+      let jobRole = null;
       if (organizationIdForUser) {
         const { data: membership, error: membershipError } = await supabaseAdmin
           .from('organization_members')
-          .select('role, organization_id')
+          .select('role, job_role, organization_id')
           .eq('user_id', profile.id)
           .eq('organization_id', organizationIdForUser)
           .single();
@@ -371,12 +380,14 @@ class AuthService {
         console.log('🔍 Membership query result:', {
           found: !!membership,
           role: membership?.role,
+          job_role: membership?.job_role,
           error: membershipError?.message
         });
         
         if (membership) {
           organizationRole = membership.role;
-          console.log(`✅ User organization role: ${organizationRole}`);
+          jobRole = membership.job_role;
+          console.log(`✅ User organization role: ${organizationRole}, job_role: ${jobRole}`);
         } else {
           console.log('❌ No membership found in organization_members table');
         }
@@ -384,11 +395,12 @@ class AuthService {
         console.log('⚠️ No organizationIdForUser - user not in any organization');
       }
 
-      // Add organization_role to profile
+      // Add organization_role and job_role to profile
       const userWithOrgRole = {
         ...profile,
         organization_role: organizationRole,
-        organization_id: organizationIdForUser
+        organization_id: organizationIdForUser,
+        job_role: jobRole
       };
 
       console.log('📤 Returning user object:', {
@@ -430,18 +442,36 @@ class AuthService {
   }
 
   /**
-   * Get current user with organization role
+   * Get current user by ID
    */
   async getCurrentUser(userId) {
     try {
-      const { data, error } = await supabaseAdmin
+      // Fetch user from users table (only has basic fields now)
+      const { data: profile, error } = await supabaseAdmin
         .from('users')
-        .select('id, email, name, role, organization_role, organization_id, avatar_url, created_at')
+        .select('id, email, name, avatar_url, current_organization_id, created_at')
         .eq('id', userId)
         .single();
 
       if (error) throw error;
-      return data;
+
+      // If user has current_organization_id, fetch organization_role and job_role
+      if (profile.current_organization_id) {
+        const { data: membership } = await supabaseAdmin
+          .from('organization_members')
+          .select('role, job_role')
+          .eq('user_id', userId)
+          .eq('organization_id', profile.current_organization_id)
+          .single();
+
+        if (membership) {
+          profile.organization_role = membership.role;
+          profile.job_role = membership.job_role;
+          profile.organization_id = profile.current_organization_id;
+        }
+      }
+
+      return profile;
     } catch (error) {
       console.error('❌ Get user error:', error);
       throw error;
@@ -453,19 +483,36 @@ class AuthService {
    */
   async updateProfile(userId, updates) {
     try {
-      // Remove fields that shouldn't be updated
-      const { id, email, created_at, ...allowedUpdates } = updates;
+      // Remove fields that shouldn't be updated or don't exist in users table
+      const { id, email, created_at, role, organization_role, organization_id, job_role, ...allowedUpdates } = updates;
 
-      const { data, error } = await supabaseAdmin
+      const { data: profile, error } = await supabaseAdmin
         .from('users')
         .update(allowedUpdates)
         .eq('id', userId)
-        .select('id, email, name, role, organization_role, organization_id, avatar_url, updated_at')
+        .select('id, email, name, avatar_url, current_organization_id, updated_at')
         .single();
 
       if (error) throw error;
+
+      // Fetch organization context if available
+      if (profile.current_organization_id) {
+        const { data: membership } = await supabaseAdmin
+          .from('organization_members')
+          .select('role, job_role')
+          .eq('user_id', userId)
+          .eq('organization_id', profile.current_organization_id)
+          .single();
+
+        if (membership) {
+          profile.organization_role = membership.role;
+          profile.job_role = membership.job_role;
+          profile.organization_id = profile.current_organization_id;
+        }
+      }
+
       console.log('✅ Profile updated:', userId);
-      return data;
+      return profile;
     } catch (error) {
       console.error('❌ Update profile error:', error);
       throw error;

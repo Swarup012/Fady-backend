@@ -74,6 +74,7 @@ app.get("/health", (req, res) => {
 
 // ✅ PUBLIC ROUTES (NO AUTHENTICATION)
 app.use("/api/public", publicRoutes); // ← ADD THIS BEFORE AUTH ROUTES
+app.use("/api", roadMapRoutes); // ← Roadmap routes handle their own auth (public routes first)
 
 // API Routes (require authentication)
 app.use("/api/auth", authRoutes);
@@ -84,7 +85,6 @@ app.use("/api/boards", authenticate, injectOrganization, boardRoutes);
 app.use("/api/users", authenticate, injectOrganization, userRoutes);
 app.use("/api/organizations", organizationRoutes); // Organization routes handle their own auth (some routes are public)
 app.use("/api", authenticate, injectOrganization, postRoutes);
-app.use("/api", authenticate, injectOrganization, roadMapRoutes);
 
 // 404 Handler
 app.use((req, res) => {
