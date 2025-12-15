@@ -1,4 +1,5 @@
 const authService = require('../services/auth.service');
+const storageService = require('../services/storage.service');
 const ResponseUtil = require('../utils/response.util');
 const { supabaseAdmin } = require('../config/supabase.config');
 
@@ -15,8 +16,22 @@ class AuthController {
 
       const result = await authService.signupOrJoin({ email, password, name, role, organizationId });
 
+      // Set HTTP-only cookies for cross-subdomain authentication
+      const config = require('../config/env.config');
+      const cookieOptions = {
+        httpOnly: true,
+        secure: config.cookieSecure,
+        sameSite: 'lax',
+        domain: `.${config.cookieDomain}`, // Leading dot makes it work across subdomains
+        maxAge: config.cookieMaxAge,
+        path: '/'
+      };
+
       // Check if this was an existing user joining
       if (result.action === 'joined_existing') {
+        res.cookie('access_token', result.session.access_token, cookieOptions);
+        res.cookie('refresh_token', result.session.refresh_token, cookieOptions);
+        
         return ResponseUtil.success(
           res,
           'Successfully joined organization.',
@@ -45,7 +60,10 @@ class AuthController {
         );
       }
 
-      // Email confirmation is disabled - return tokens
+      // Email confirmation is disabled - return tokens and set cookies
+      res.cookie('access_token', result.session.access_token, cookieOptions);
+      res.cookie('refresh_token', result.session.refresh_token, cookieOptions);
+
       return ResponseUtil.success(
         res,
         'User registered successfully.',
@@ -91,9 +109,23 @@ class AuthController {
 
       const result = await authService.login({ email, password, organizationId, userRole });
 
+      // Set HTTP-only cookies for cross-subdomain authentication
+      const config = require('../config/env.config');
+      const cookieOptions = {
+        httpOnly: true,
+        secure: config.cookieSecure,
+        sameSite: 'lax',
+        domain: `.${config.cookieDomain}`, // Leading dot makes it work across subdomains
+        maxAge: config.cookieMaxAge,
+        path: '/'
+      };
+
+      res.cookie('access_token', result.session.access_token, cookieOptions);
+      res.cookie('refresh_token', result.session.refresh_token, cookieOptions);
+
       return ResponseUtil.success(res, 'Login successful', {
         user: result.user,
-        access_token: result.session.access_token,
+        access_token: result.session.access_token, // Still return for backward compatibility
         refresh_token: result.session.refresh_token,
         joinedOrganization: result.joinedOrganization || false
       });
@@ -121,10 +153,36 @@ class AuthController {
   async logout(req, res, next) {
     try {
       await authService.logout(req.token);
+
+      // Clear HTTP-only cookies
+      const config = require('../config/env.config');
+      const cookieOptions = {
+        httpOnly: true,
+        secure: config.cookieSecure,
+        sameSite: 'lax',
+        domain: `.${config.cookieDomain}`,
+        path: '/'
+      };
+
+      res.clearCookie('access_token', cookieOptions);
+      res.clearCookie('refresh_token', cookieOptions);
+
       return ResponseUtil.success(res, 'Logout successful');
     } catch (error) {
       console.error('Logout controller error:', error);
-      // Even if logout fails, return success to client
+      // Even if logout fails, clear cookies and return success to client
+      const config = require('../config/env.config');
+      const cookieOptions = {
+        httpOnly: true,
+        secure: config.cookieSecure,
+        sameSite: 'lax',
+        domain: `.${config.cookieDomain}`,
+        path: '/'
+      };
+
+      res.clearCookie('access_token', cookieOptions);
+      res.clearCookie('refresh_token', cookieOptions);
+
       return ResponseUtil.success(res, 'Logout successful');
     }
   }
@@ -163,6 +221,51 @@ class AuthController {
   }
 
   /**
+   * Upload avatar
+   * POST /api/auth/upload-avatar
+   */
+  async uploadAvatar(req, res, next) {
+    try {
+      if (!req.file) {
+        return ResponseUtil.error(res, 'No file uploaded', 400);
+      }
+
+      const userId = req.user.id;
+
+      // Get current user to check for existing avatar
+      const { data: currentUser } = await supabaseAdmin
+        .from('users')
+        .select('avatar_url')
+        .eq('id', userId)
+        .single();
+
+      // Delete old avatar if exists
+      if (currentUser?.avatar_url) {
+        const oldFilePath = storageService.extractFilePath(currentUser.avatar_url);
+        if (oldFilePath) {
+          await storageService.deleteAvatar(oldFilePath);
+        }
+      }
+
+      // Upload new avatar
+      const uploadResult = await storageService.uploadAvatar(userId, req.file);
+
+      // Update user profile with new avatar URL
+      const updatedUser = await authService.updateProfile(userId, {
+        avatar_url: uploadResult.url,
+      });
+
+      return ResponseUtil.success(res, 'Avatar uploaded successfully', {
+        user: updatedUser,
+        avatar_url: uploadResult.url,
+      });
+    } catch (error) {
+      console.error('Upload avatar controller error:', error);
+      next(error);
+    }
+  }
+
+  /**
    * Request password reset
    * POST /api/auth/forgot-password
    */
@@ -186,17 +289,53 @@ class AuthController {
   }
 
   /**
-   * Reset password
+   * Reset password with token
    * POST /api/auth/reset-password
    */
   async resetPassword(req, res, next) {
     try {
-      const { password } = req.body;
-      await authService.resetPassword(req.token, password);
+      const { token, password } = req.body;
 
-      return ResponseUtil.success(res, 'Password reset successful');
+      if (!token || !password) {
+        return ResponseUtil.error(res, 'Token and password are required', 400);
+      }
+
+      const result = await authService.resetPassword(token, password);
+
+      return ResponseUtil.success(res, 'Password reset successful. You can now login with your new password.');
     } catch (error) {
       console.error('Reset password controller error:', error);
+      
+      // Handle specific error messages
+      if (error.message.includes('Invalid') || error.message.includes('expired')) {
+        return ResponseUtil.error(res, error.message, 400);
+      }
+      
+      next(error);
+    }
+  }
+
+  /**
+   * Verify reset token
+   * GET /api/auth/verify-reset-token
+   */
+  async verifyResetToken(req, res, next) {
+    try {
+      const { token } = req.query;
+
+      if (!token) {
+        return ResponseUtil.error(res, 'Token is required', 400);
+      }
+
+      const result = await authService.verifyResetToken(token);
+
+      if (!result.valid) {
+        return ResponseUtil.error(res, result.message, 400);
+      }
+
+      return ResponseUtil.success(res, 'Token is valid');
+    } catch (error) {
+      console.error('Verify reset token error:', error);
       next(error);
     }
   }

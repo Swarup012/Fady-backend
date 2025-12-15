@@ -8,6 +8,7 @@ const publicRoutes = require("./routes/public.routes");
 const roadMapRoutes = require("./routes/roadmap.routes.js");
 const userRoutes = require("./routes/user.routes");
 const organizationRoutes = require("./routes/organization.routes");
+const invitationRoutes = require("./routes/invitation.routes");
 const { authenticate } = require("./middleware/auth.middleware");
 const { injectOrganization } = require("./middleware/organization.middleware");
 
@@ -51,6 +52,10 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Cookie parser for cross-subdomain authentication
+const cookieParser = require('cookie-parser');
+app.use(cookieParser());
+
 // Request logging (development)
 if (config.nodeEnv === "development") {
   app.use((req, res, next) => {
@@ -78,6 +83,9 @@ app.use("/api", roadMapRoutes); // ← Roadmap routes handle their own auth (pub
 
 // API Routes (require authentication)
 app.use("/api/auth", authRoutes);
+
+// ✅ INVITATION ROUTES (public verify, protected accept)
+app.use("/api/invitations", invitationRoutes);
 
 // ✅ AUTHENTICATED ROUTES WITH ORGANIZATION CONTEXT
 // Organization middleware is added to validate subdomain access

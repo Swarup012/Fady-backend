@@ -1,16 +1,51 @@
 const { supabase, supabaseAdmin } = require('../config/supabase.config');
 const ResponseUtil = require('../utils/response.util');
+const cache = require('../services/redis.service');
 
 const authenticate = async (req, res, next) => {
   try {
-    // Get token from Authorization header
+    // Get token from Authorization header OR from cookies (for cross-subdomain auth)
     const authHeader = req.headers.authorization;
+    let token;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    } else if (req.cookies && req.cookies.access_token) {
+      // Fallback to cookie if no Authorization header
+      token = req.cookies.access_token;
+    }
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!token) {
       return ResponseUtil.error(res, 'No token provided', 401);
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    // 🔴 CACHE: Try to get user session from cache first
+    // Create cache key from FULL token hash (not just first 32 chars - they're identical for all Supabase JWTs!)
+    const crypto = require('crypto');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex').substring(0, 32);
+    const sessionCacheKey = `user:session:${tokenHash}`;
+    
+    // 🐛 DEBUG: Log token info
+    console.log('🔑 DEBUG - Auth Middleware:', {
+      tokenHash: tokenHash,
+      cacheKey: sessionCacheKey,
+      fullToken: token.substring(0, 50) + '...',
+    });
+    
+    const cachedSession = await cache.get(sessionCacheKey);
+    if (cachedSession) {
+      console.log(`🔴 Session cache HIT for user: ${cachedSession.email}`);
+      console.log('🐛 DEBUG - Cached Session:', {
+        email: cachedSession.email,
+        userId: cachedSession.id,
+        orgRole: cachedSession.organization_role,
+      });
+      req.user = cachedSession;
+      req.token = token;
+      return next();
+    }
+
+    console.log(`❌ Session cache MISS - fetching from database`);
 
     // Verify token with Supabase
     const { data: { user }, error } = await supabase.auth.getUser(token);
@@ -96,6 +131,17 @@ const authenticate = async (req, res, next) => {
     
     console.log('📤 Middleware - Final profile.organization_role:', profile.organization_role);
 
+    // 🔴 CACHE: Store user session in cache (TTL: 30 minutes = 1800 seconds)
+    await cache.set(sessionCacheKey, profile, 1800);
+    console.log(`✅ Session cached for user: ${profile.email}`);
+    console.log('🐛 DEBUG - Caching Session:', {
+      email: profile.email,
+      userId: profile.id,
+      tokenHash: tokenHash,
+      cacheKey: sessionCacheKey,
+      orgRole: profile.organization_role,
+    });
+
     // Attach user and token to request
     req.user = profile;
     req.token = token;
@@ -104,6 +150,85 @@ const authenticate = async (req, res, next) => {
   } catch (error) {
     console.error('Authentication error:', error);
     return ResponseUtil.error(res, 'Authentication failed', 401);
+  }
+};
+
+// Optional authentication - doesn't fail if no token, just sets req.user if available
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      // No token provided, continue without user
+      req.user = null;
+      return next();
+    }
+
+    const token = authHeader.substring(7);
+    
+    // 🔴 CACHE: Try to get user session from cache first
+    const crypto = require('crypto');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex').substring(0, 32);
+    const sessionCacheKey = `user:session:${tokenHash}`;
+    
+    console.log('🔑 DEBUG - Optional Auth:', { tokenHash, cacheKey: sessionCacheKey });
+    
+    const cachedSession = await cache.get(sessionCacheKey);
+    if (cachedSession) {
+      console.log(`🔴 Optional session cache HIT for user: ${cachedSession.email}`);
+      console.log('🐛 DEBUG - Optional Cached User:', { email: cachedSession.email, userId: cachedSession.id });
+      req.user = cachedSession;
+      req.token = token;
+      return next();
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      // Invalid token, continue without user
+      req.user = null;
+      return next();
+    }
+
+    // Get user profile
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile) {
+      req.user = null;
+      return next();
+    }
+
+    // Get organization membership
+    if (profile.current_organization_id) {
+      const { data: membership } = await supabaseAdmin
+        .from('organization_members')
+        .select('role, job_role, organization_id')
+        .eq('user_id', profile.id)
+        .eq('organization_id', profile.current_organization_id)
+        .single();
+      
+      if (membership) {
+        profile.organization_role = membership.role;
+        profile.job_role = membership.job_role;
+        profile.organization_id = membership.organization_id;
+      }
+    }
+
+    // 🔴 CACHE: Store user session in cache (TTL: 30 minutes)
+    await cache.set(sessionCacheKey, profile, 1800);
+    console.log(`✅ Optional session cached for user: ${profile.email}`);
+
+    req.user = profile;
+    req.token = token;
+    next();
+  } catch (error) {
+    console.error('Optional authentication error:', error);
+    req.user = null;
+    next();
   }
 };
 
@@ -136,4 +261,4 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { authenticate, authorize };
+module.exports = { authenticate, optionalAuthenticate, authorize };

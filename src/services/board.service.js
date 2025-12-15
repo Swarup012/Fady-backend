@@ -1,15 +1,19 @@
 const { supabaseAdmin } = require("../config/supabase.config");
+const cache = require("./redis.service");
 
 class BoardService {
   /**
    * Get all boards - ORGANIZATION-SCOPED VERSION with ROLE FILTERING
-   * Users see boards in their organization that match their role
+   * - Admins/Owners: See ALL boards in organization
+   * - Members: See only boards matching their job_role
+   * 🔴 CACHED: TTL 1 hour
    */
-  async getAllBoards(userId, jobRole) {
+  async getAllBoards(userId, jobRole, organizationRole) {
     try {
       console.log('🔍 Board Service - getAllBoards:');
       console.log('   User ID:', userId);
       console.log('   Job Role:', jobRole);
+      console.log('   Organization Role:', organizationRole);
       
       // Get user's current organization from users table
       const { data: user, error: userError } = await supabaseAdmin
@@ -34,6 +38,16 @@ class BoardService {
         return [];
       }
 
+      // 🔴 CACHE KEY: boards:org:{orgId}:role:{role}:jobrole:{jobRole}
+      const cacheKey = `boards:org:${organizationId}:role:${organizationRole}:jobrole:${jobRole || 'none'}`;
+      
+      // Try to get from cache first
+      const cachedBoards = await cache.get(cacheKey);
+      if (cachedBoards) {
+        console.log(`🔴 Returning ${cachedBoards.length} boards from cache`);
+        return cachedBoards;
+      }
+
       let query = supabaseAdmin
         .from("boards")
         .select("*")
@@ -46,10 +60,17 @@ class BoardService {
 
       if (error) throw error;
 
-      // Apply job role filtering client-side (RLS already handles most of this)
-      // But we'll add extra check for visibility based on job_role
+      // ✅ ROLE-BASED FILTERING LOGIC
+      // Admins and Owners see ALL boards (no filtering)
+      // Members see only boards matching their job_role
       let filteredBoards = data || [];
-      if (jobRole && filteredBoards.length > 0) {
+      
+      if (organizationRole === 'owner' || organizationRole === 'admin') {
+        // Admins/Owners see everything
+        console.log(`✅ Admin/Owner access: Showing all ${filteredBoards.length} boards (no filtering)`);
+      } else if (organizationRole === 'member' && jobRole && filteredBoards.length > 0) {
+        // Members: Apply job_role filtering
+        const originalCount = filteredBoards.length;
         filteredBoards = data.filter(board => {
           // If board has no visibility restrictions, show it
           if (!board.visible_to_roles || board.visible_to_roles.length === 0) {
@@ -58,10 +79,14 @@ class BoardService {
           // Check if user's job_role is in the allowed roles
           return board.visible_to_roles.includes(jobRole);
         });
-        console.log(`✅ Filtered ${filteredBoards.length}/${data.length} boards by job_role: ${jobRole}`);
+        console.log(`✅ Member access: Filtered ${filteredBoards.length}/${originalCount} boards by job_role: ${jobRole}`);
       }
 
       console.log(`✅ Retrieved ${filteredBoards.length} boards for user ${userId}`);
+      
+      // 🔴 Cache the result for 1 hour (3600 seconds)
+      await cache.set(cacheKey, filteredBoards, 3600);
+      
       return filteredBoards;
     } catch (error) {
       console.error("❌ Get boards error:", error);
@@ -138,7 +163,7 @@ class BoardService {
   /**
    * Create new board
    */
-   async createBoard({ name, description, is_private, color, icon, category, owner_id, organization_id }) {
+   async createBoard({ name, description, is_private, color, icon, category, owner_id, organization_id, visible_to_roles }) {
      try {
        const baseSlug = name
          .toLowerCase()
@@ -182,6 +207,11 @@ class BoardService {
          boardData.organization_id = organization_id;
        }
 
+       // ✅ Add visible_to_roles if provided (role targeting)
+       if (visible_to_roles && Array.isArray(visible_to_roles)) {
+         boardData.visible_to_roles = visible_to_roles;
+       }
+
        const { data, error } = await supabaseAdmin
          .from('boards')
          .insert([boardData])
@@ -190,7 +220,16 @@ class BoardService {
 
        if (error) throw error;
 
-       console.log(`✅ Board created: ${data.name} (${data.slug}) - Category: ${data.category}`);
+       const roleInfo = data.visible_to_roles && data.visible_to_roles.length > 0 
+         ? ` - Visible to: ${data.visible_to_roles.join(', ')}` 
+         : ' - Visible to all';
+       console.log(`✅ Board created: ${data.name} (${data.slug}) - Category: ${data.category}${roleInfo}`);
+       
+       // 🔴 Invalidate board list cache for this organization
+       if (organization_id) {
+         await cache.deletePattern(`boards:org:${organization_id}:*`);
+       }
+       
        return data;
      } catch (error) {
        console.error('❌ Create board error:', error);
@@ -259,6 +298,14 @@ class BoardService {
       if (error) throw error;
 
       console.log(`✅ Board updated: ${data.name}`);
+      
+      // 🔴 Invalidate board list cache for this organization
+      if (data.organization_id) {
+        await cache.deletePattern(`boards:org:${data.organization_id}:*`);
+      }
+      // Also invalidate this specific board's cache
+      await cache.delete(`board:${boardId}`, `board:slug:${data.slug}`);
+      
       return data;
     } catch (error) {
       console.error("❌ Update board error:", error);
@@ -286,6 +333,13 @@ class BoardService {
         throw new Error("Access denied - only board owner can delete");
       }
 
+      // Get board details before deletion for cache invalidation
+      const { data: fullBoard } = await supabaseAdmin
+        .from("boards")
+        .select("organization_id, slug")
+        .eq("id", boardId)
+        .single();
+
       const { error } = await supabaseAdmin
         .from("boards")
         .delete()
@@ -294,6 +348,17 @@ class BoardService {
       if (error) throw error;
 
       console.log(`✅ Board deleted: ${board.name}`);
+      
+      // 🔴 Invalidate board list cache for this organization
+      if (fullBoard?.organization_id) {
+        await cache.deletePattern(`boards:org:${fullBoard.organization_id}:*`);
+      }
+      // Also invalidate this specific board's cache
+      await cache.delete(`board:${boardId}`);
+      if (fullBoard?.slug) {
+        await cache.delete(`board:slug:${fullBoard.slug}`);
+      }
+      
       return true;
     } catch (error) {
       console.error("❌ Delete board error:", error);

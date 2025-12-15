@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const organizationController = require('../controllers/organization.controller');
+const invitationController = require('../controllers/invitation.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 
 // Public routes (no authentication required)
@@ -38,5 +39,21 @@ router.put('/:organizationId/members/:userId', organizationController.updateUser
 
 // Remove user from organization
 router.delete('/:organizationId/members/:userId', organizationController.removeUser);
+
+// =====================================================
+// INVITATION ROUTES (NEW - Invite-only system)
+// =====================================================
+
+// Create invitation (owner only)
+router.post('/:orgId/invites', invitationController.createInvitation);
+
+// List invitations for organization (owner/admin only)
+router.get('/:orgId/invites', invitationController.listInvitations);
+
+// Resend invitation (owner only)
+router.post('/:orgId/invites/:inviteId/resend', invitationController.resendInvitation);
+
+// Revoke invitation (owner only)
+router.delete('/:orgId/invites/:inviteId', invitationController.revokeInvitation);
 
 module.exports = router;

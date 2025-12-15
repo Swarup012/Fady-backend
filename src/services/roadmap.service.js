@@ -1,5 +1,7 @@
 
 // src/services/roadmap.service.js
+const cache = require("./redis.service");
+
 let supabase, supabaseAdmin;
 try {
   const supabaseConfig = require('../config/supabase.config.js');
@@ -11,11 +13,103 @@ try {
 
 const roadmapService = {
   /** ===============================
+   * GET: All roadmap items across ALL boards (Admin view)
+   * =============================== */
+  getAllRoadmapItems: async (organizationId, filters = {}) => {
+    try {
+      console.log('Service: Fetching ALL roadmap items for organization:', organizationId);
+
+      // 🔴 Build cache key based on filters
+      const statusKey = filters.status?.length > 0 ? filters.status.join(',') : 'all';
+      const categoryKey = filters.category || 'all';
+      const publicKey = filters.isPublic !== undefined ? filters.isPublic : 'all';
+      const boardKey = filters.boardSlug || 'all';
+      const cacheKey = `roadmap:org:${organizationId}:status:${statusKey}:cat:${categoryKey}:public:${publicKey}:board:${boardKey}`;
+
+      // 🔴 Check cache first
+      const cachedData = await cache.get(cacheKey);
+      if (cachedData) {
+        console.log(`🔴 Roadmap cache HIT for org: ${organizationId} (${cachedData.items.length} items)`);
+        return cachedData;
+      }
+
+      console.log(`❌ Roadmap cache MISS for org: ${organizationId}`);
+
+      // Build query for all roadmap items in the organization
+      let query = supabase
+        .from('roadmap_items')
+        .select(`
+          *,
+          created_by:users!roadmap_items_created_by_fkey(id, name, email, avatar_url),
+          board:boards!roadmap_items_board_id_fkey(id, name, slug, color, icon),
+          votes:roadmap_votes(count),
+          comments:roadmap_comments(count),
+          linked_feedback:roadmap_feedback_links(
+            feedback:posts(id, title, status, upvotes)
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      // Apply filters
+      if (filters.status?.length > 0) query = query.in('status', filters.status);
+      if (filters.category) query = query.eq('category', filters.category);
+      if (filters.isPublic !== undefined) query = query.eq('is_public', filters.isPublic);
+      if (filters.boardSlug) {
+        // If filtering by specific board, join with boards table
+        const { data: board } = await supabaseAdmin
+          .from('boards')
+          .select('id')
+          .eq('slug', filters.boardSlug)
+          .single();
+        if (board) {
+          query = query.eq('board_id', board.id);
+        }
+      }
+
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+
+      // Transform data
+      const items = (data || []).map((item) => ({
+        ...item,
+        vote_count: item.votes?.[0]?.count || 0,
+        comment_count: item.comments?.[0]?.count || 0,
+        linked_feedback: item.linked_feedback?.map((link) => link.feedback) || [],
+      }));
+
+      const result = { items, count: items.length };
+
+      // 🔴 Cache the result (10 minutes TTL)
+      await cache.set(cacheKey, result, 600);
+
+      return result;
+    } catch (error) {
+      console.error('Error in getAllRoadmapItems:', error);
+      throw error;
+    }
+  },
+
+  /** ===============================
    * GET: All roadmap items (with filters)
    * =============================== */
   getRoadmapItems: async (boardSlug, filters = {}) => {
     try {
       console.log('Service: Fetching roadmap items for board:', boardSlug);
+
+      // 🔴 Build cache key based on filters
+      const statusKey = filters.status?.length > 0 ? filters.status.join(',') : 'all';
+      const categoryKey = filters.category || 'all';
+      const publicKey = filters.isPublic !== undefined ? filters.isPublic : 'all';
+      const cacheKey = `roadmap:board:${boardSlug}:status:${statusKey}:cat:${categoryKey}:public:${publicKey}`;
+
+      // 🔴 Check cache first
+      const cachedData = await cache.get(cacheKey);
+      if (cachedData) {
+        console.log(`🔴 Roadmap cache HIT for board: ${boardSlug} (${cachedData.items.length} items)`);
+        return cachedData;
+      }
+
+      console.log(`❌ Roadmap cache MISS for board: ${boardSlug}`);
 
       // 1️⃣ Get board ID from slug
       const { data: board, error: boardError } = await supabaseAdmin
@@ -59,7 +153,12 @@ const roadmapService = {
         linked_feedback: item.linked_feedback?.map((link) => link.feedback) || [],
       }));
 
-      return { items, count: items.length };
+      const result = { items, count: items.length };
+
+      // 🔴 Cache the result (10 minutes TTL)
+      await cache.set(cacheKey, result, 600);
+
+      return result;
     } catch (error) {
       console.error('Error in getRoadmapItems:', error);
       throw error;
@@ -71,6 +170,16 @@ const roadmapService = {
    * =============================== */
   getRoadmapItemById: async (itemId) => {
     try {
+      // 🔴 Check cache first
+      const cacheKey = `roadmap:item:${itemId}`;
+      const cachedItem = await cache.get(cacheKey);
+      if (cachedItem) {
+        console.log(`🔴 Roadmap item cache HIT: ${itemId}`);
+        return cachedItem;
+      }
+
+      console.log(`❌ Roadmap item cache MISS: ${itemId}`);
+
       const { data, error } = await supabase
         .from('roadmap_items')
         .select(`
@@ -79,7 +188,7 @@ const roadmapService = {
           votes:roadmap_votes(count),
           comments:roadmap_comments(
             *,
-            author:users(id, name, email, avatar_url, role)
+            author:users(id, name, email, avatar_url)
           ),
           updates:roadmap_updates(
             *,
@@ -95,12 +204,17 @@ const roadmapService = {
 
       if (error) throw new Error(error.message);
 
-      return {
+      const result = {
         ...data,
         vote_count: data.votes?.[0]?.count || 0,
         comment_count: data.comments?.length || 0,
         linked_feedback: data.linked_feedback?.map((link) => link.feedback) || [],
       };
+
+      // 🔴 Cache the result (15 minutes TTL - longer since less frequently updated)
+      await cache.set(cacheKey, result, 900);
+
+      return result;
     } catch (error) {
       console.error('Error in getRoadmapItemById:', error);
       throw error;
@@ -114,7 +228,7 @@ const roadmapService = {
     try {
       const { data: board, error: boardError } = await supabaseAdmin
         .from('boards')
-        .select('id')
+        .select('id, organization_id')
         .eq('slug', boardSlug)
         .single();
 
@@ -141,6 +255,12 @@ const roadmapService = {
         .single();
 
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate roadmap caches for this board and organization
+      await cache.deletePattern(`roadmap:board:${boardSlug}:*`);
+      await cache.deletePattern(`roadmap:org:${board.organization_id}:*`);
+      console.log(`🗑️  Roadmap caches invalidated for board: ${boardSlug}`);
+
       return data;
     } catch (error) {
       console.error('Error in createRoadmapItem:', error);
@@ -153,6 +273,13 @@ const roadmapService = {
    * =============================== */
   updateRoadmapItem: async (itemId, updates) => {
     try {
+      // Get current item to find board info for cache invalidation
+      const { data: currentItem } = await supabaseAdmin
+        .from('roadmap_items')
+        .select('board:boards(slug, organization_id)')
+        .eq('id', itemId)
+        .single();
+
       // Clean up empty strings to null for optional fields
       const cleanedUpdates = { ...updates };
       if (cleanedUpdates.target_quarter === '') cleanedUpdates.target_quarter = null;
@@ -167,6 +294,15 @@ const roadmapService = {
         .single();
 
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate caches: specific item + board lists + org lists
+      await cache.delete(`roadmap:item:${itemId}`);
+      if (currentItem?.board) {
+        await cache.deletePattern(`roadmap:board:${currentItem.board.slug}:*`);
+        await cache.deletePattern(`roadmap:org:${currentItem.board.organization_id}:*`);
+      }
+      console.log(`🗑️  Roadmap caches invalidated for item: ${itemId}`);
+
       return data;
     } catch (error) {
       console.error('Error in updateRoadmapItem:', error);
@@ -179,8 +315,24 @@ const roadmapService = {
    * =============================== */
   deleteRoadmapItem: async (itemId) => {
     try {
+      // Get item to find board info for cache invalidation
+      const { data: item } = await supabaseAdmin
+        .from('roadmap_items')
+        .select('board:boards(slug, organization_id)')
+        .eq('id', itemId)
+        .single();
+
       const { error } = await supabaseAdmin.from('roadmap_items').delete().eq('id', itemId);
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate caches: specific item + board lists + org lists
+      await cache.delete(`roadmap:item:${itemId}`);
+      if (item?.board) {
+        await cache.deletePattern(`roadmap:board:${item.board.slug}:*`);
+        await cache.deletePattern(`roadmap:org:${item.board.organization_id}:*`);
+      }
+      console.log(`🗑️  Roadmap caches invalidated for deleted item: ${itemId}`);
+
       return { success: true };
     } catch (error) {
       console.error('Error in deleteRoadmapItem:', error);
@@ -208,11 +360,19 @@ const roadmapService = {
           .delete()
           .eq('roadmap_item_id', itemId)
           .eq('user_id', userId);
+        
+        // 🔴 Invalidate item cache (vote count changed)
+        await cache.delete(`roadmap:item:${itemId}`);
+        
         return { voted: false };
       } else {
         await supabaseAdmin
           .from('roadmap_votes')
           .insert([{ roadmap_item_id: itemId, user_id: userId }]);
+        
+        // 🔴 Invalidate item cache (vote count changed)
+        await cache.delete(`roadmap:item:${itemId}`);
+        
         return { voted: true };
       }
     } catch (error) {
@@ -250,10 +410,10 @@ const roadmapService = {
         .from('roadmap_comments')
         .select(`
           *,
-          author:users(id, name, email, avatar_url, role),
+          author:users(id, name, email, avatar_url),
           replies:roadmap_comments!parent_id(
             *,
-            author:users(id, name, email, avatar_url, role)
+            author:users(id, name, email, avatar_url)
           )
         `)
         .eq('roadmap_item_id', itemId)
@@ -275,11 +435,15 @@ const roadmapService = {
         .insert([{ roadmap_item_id: itemId, content, author_id: userId, parent_id: parentId }])
         .select(`
           *,
-          author:users(id, name, email, avatar_url, role)
+          author:users(id, name, email, avatar_url)
         `)
         .single();
 
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate item cache (comment count changed)
+      await cache.delete(`roadmap:item:${itemId}`);
+
       return data;
     } catch (error) {
       console.error('Error in addComment:', error);
@@ -306,8 +470,21 @@ const roadmapService = {
 
   deleteComment: async (commentId) => {
     try {
+      // Get comment to find roadmap item for cache invalidation
+      const { data: comment } = await supabaseAdmin
+        .from('roadmap_comments')
+        .select('roadmap_item_id')
+        .eq('id', commentId)
+        .single();
+
       const { error } = await supabaseAdmin.from('roadmap_comments').delete().eq('id', commentId);
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate item cache (comment count changed)
+      if (comment?.roadmap_item_id) {
+        await cache.delete(`roadmap:item:${comment.roadmap_item_id}`);
+      }
+
       return { success: true };
     } catch (error) {
       console.error('Error in deleteComment:', error);
@@ -338,6 +515,10 @@ const roadmapService = {
         .single();
 
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate item cache (new update added)
+      await cache.delete(`roadmap:item:${itemId}`);
+
       return data;
     } catch (error) {
       console.error('Error in addUpdate:', error);
@@ -365,6 +546,10 @@ const roadmapService = {
         .insert([{ roadmap_item_id: itemId, feedback_id: feedbackId }]);
 
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate item cache (linked feedback changed)
+      await cache.delete(`roadmap:item:${itemId}`);
+
       return { success: true };
     } catch (error) {
       console.error('Error in linkFeedback:', error);
@@ -381,6 +566,10 @@ const roadmapService = {
         .eq('feedback_id', feedbackId);
 
       if (error) throw new Error(error.message);
+
+      // 🔴 Invalidate item cache (linked feedback changed)
+      await cache.delete(`roadmap:item:${itemId}`);
+
       return { success: true };
     } catch (error) {
       console.error('Error in unlinkFeedback:', error);
@@ -393,9 +582,26 @@ const roadmapService = {
    * =============================== */
   reorderItems: async (itemIds) => {
     try {
-      const updates = itemIds.map((id, index) => ({ id, order_index: index }));
-      const { error } = await supabaseAdmin.from('roadmap_items').upsert(updates);
-      if (error) throw new Error(error.message);
+      // Get board info from first item for cache invalidation
+      if (itemIds.length > 0) {
+        const { data: item } = await supabaseAdmin
+          .from('roadmap_items')
+          .select('board:boards(slug, organization_id)')
+          .eq('id', itemIds[0])
+          .single();
+        
+        const updates = itemIds.map((id, index) => ({ id, order_index: index }));
+        const { error } = await supabaseAdmin.from('roadmap_items').upsert(updates);
+        if (error) throw new Error(error.message);
+
+        // 🔴 Invalidate board and org caches (order changed)
+        if (item?.board) {
+          await cache.deletePattern(`roadmap:board:${item.board.slug}:*`);
+          await cache.deletePattern(`roadmap:org:${item.board.organization_id}:*`);
+          console.log(`🗑️  Roadmap caches invalidated after reorder`);
+        }
+      }
+      
       return { success: true };
     } catch (error) {
       console.error('Error in reorderItems:', error);

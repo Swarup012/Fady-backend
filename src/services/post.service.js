@@ -1,11 +1,27 @@
 const { supabaseAdmin } = require("../config/supabase.config");
+const cache = require("./redis.service");
+const { emitPostUpvoted, emitPostCreated, emitPostUpdated, emitPostDeleted, emitPostCommentCount } = require("../socket/handlers/post.handler");
+const { emitCommentNew, emitCommentUpdated, emitCommentDeleted, emitCommentLiked } = require("../socket/handlers/comment.handler");
 
 class PostService {
   /**
    * Get all posts (for admin dashboard)
+   * 🔴 CACHED: TTL 5 minutes (300 seconds)
    */
   async getAllPosts(userId, organizationId) {
     try {
+      // 🔴 CACHE KEY: posts:org:{orgId}:all
+      const cacheKey = `posts:org:${organizationId}:all`;
+      
+      // Try to get from cache first
+      const cachedPosts = await cache.get(cacheKey);
+      if (cachedPosts) {
+        console.log(`🔴 Posts cache HIT for org: ${organizationId} (${cachedPosts.length} posts)`);
+        return cachedPosts;
+      }
+
+      console.log(`❌ Posts cache MISS for org: ${organizationId} - fetching from database`);
+
       let query = supabaseAdmin
         .from("posts")
         .select(
@@ -24,6 +40,11 @@ class PostService {
       if (error) throw error;
 
       console.log(`✅ Retrieved ${data.length} posts for organization`);
+      
+      // 🔴 Cache the result for 5 minutes (300 seconds)
+      await cache.set(cacheKey, data, 300);
+      console.log(`🔴 Posts cached for org: ${organizationId}`);
+      
       return data;
     } catch (error) {
       console.error("❌ Get all posts error:", error);
@@ -33,9 +54,27 @@ class PostService {
 
   /**
    * Get all posts for a board
+   * 🔴 CACHED: TTL 5 minutes
    */
   async getPostsByBoard(boardSlug, filters = {}) {
     try {
+      // 🔴 CACHE KEY: posts:board:{slug}:{sortBy}:{status}:{search}
+      const sortBy = filters.sortBy || "created_at";
+      const status = filters.status || "all";
+      const search = filters.search || "none";
+      const sortOrder = filters.sortOrder || "desc";
+      
+      const cacheKey = `posts:board:${boardSlug}:${sortBy}:${sortOrder}:${status}:${search}`;
+      
+      // Try to get from cache first
+      const cachedPosts = await cache.get(cacheKey);
+      if (cachedPosts) {
+        console.log(`🔴 Post list cache HIT for board: ${boardSlug} (${cachedPosts.length} posts)`);
+        return cachedPosts;
+      }
+
+      console.log(`❌ Post list cache MISS for board: ${boardSlug}`);
+
       // Get board first
       const { data: board, error: boardError } = await supabaseAdmin
         .from("boards")
@@ -79,9 +118,6 @@ class PostService {
       }
 
       // Sorting
-      const sortBy = filters.sortBy || "created_at";
-      const sortOrder = filters.sortOrder || "desc";
-
       if (sortBy === "upvotes") {
         query = query.order("upvotes", { ascending: sortOrder === "asc" });
       } else if (sortBy === "comments") {
@@ -97,6 +133,10 @@ class PostService {
       if (error) throw error;
 
       console.log(`✅ Retrieved ${data.length} posts for board: ${boardSlug}`);
+      
+      // 🔴 Cache the result for 5 minutes (300 seconds)
+      await cache.set(cacheKey, data, 300);
+      
       return data;
     } catch (error) {
       console.error("❌ Get posts error:", error);
@@ -106,9 +146,22 @@ class PostService {
 
   /**
    * Get single post by ID
+   * 🔴 CACHED: TTL 10 minutes
    */
   async getPostById(postId) {
     try {
+      // 🔴 CACHE KEY: post:{id}
+      const cacheKey = `post:${postId}`;
+      
+      // Try to get from cache first
+      const cachedPost = await cache.get(cacheKey);
+      if (cachedPost) {
+        console.log(`🔴 Post cache HIT for: ${cachedPost.title}`);
+        return cachedPost;
+      }
+
+      console.log(`❌ Post cache MISS for ID: ${postId}`);
+
       const { data, error } = await supabaseAdmin
         .from("posts")
         .select(
@@ -129,6 +182,10 @@ class PostService {
       }
 
       console.log(`✅ Retrieved post: ${data.title}`);
+      
+      // 🔴 Cache the result for 10 minutes (600 seconds)
+      await cache.set(cacheKey, data, 600);
+      
       return data;
     } catch (error) {
       console.error("❌ Get post error:", error);
@@ -185,6 +242,25 @@ class PostService {
       if (error) throw error;
 
       console.log(`✅ Post created: ${data.title}`);
+      
+      // 🔴 Invalidate post list cache for this board
+      if (data.board && data.board.slug) {
+        await cache.deletePattern(`posts:board:${data.board.slug}:*`);
+        console.log(`🗑️  Post list cache invalidated for board: ${data.board.slug}`);
+      }
+      
+      // � Invalidate organization posts cache (for admin dashboard)
+      if (data.organization_id) {
+        await cache.delete(`posts:org:${data.organization_id}:all`);
+        console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
+      }
+      
+      // �📡 Emit real-time event to board viewers
+      if (data.board && data.board.slug) {
+        emitPostCreated(data.board.slug, data);
+        console.log(`📡 Emitted post:created event for board: ${data.board.slug}`);
+      }
+      
       return data;
     } catch (error) {
       console.error("❌ Create post error:", error);
@@ -208,8 +284,8 @@ class PostService {
         throw new Error("Post not found");
       }
 
-      // Only author or admin can update
-      if (userRole !== "admin" && post.author_id !== userId) {
+      // Only author, admin, or owner can update
+      if (userRole !== "admin" && userRole !== "owner" && post.author_id !== userId) {
         throw new Error("Access denied");
       }
 
@@ -229,6 +305,21 @@ class PostService {
       if (error) throw error;
 
       console.log(`✅ Post updated: ${data.title}`);
+      
+      // 🔴 Invalidate caches
+      // 1. Invalidate this specific post's cache
+      await cache.delete(`post:${postId}`);
+      // 2. Invalidate post list cache for this board
+      if (data.board && data.board.slug) {
+        await cache.deletePattern(`posts:board:${data.board.slug}:*`);
+        console.log(`🗑️  Post caches invalidated for: ${data.board.slug}`);
+      }
+      // 3. Invalidate organization posts cache (for admin dashboard)
+      if (data.organization_id) {
+        await cache.delete(`posts:org:${data.organization_id}:all`);
+        console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
+      }
+      
       return data;
     } catch (error) {
       console.error("❌ Update post error:", error);
@@ -276,6 +367,26 @@ class PostService {
       ]);
 
       console.log(`✅ Post status updated: ${oldStatus} → ${newStatus}`);
+      
+      // � Invalidate organization posts cache (for admin dashboard)
+      if (data.organization_id) {
+        await cache.delete(`posts:org:${data.organization_id}:all`);
+        console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
+      }
+      
+      // �📡 Emit real-time event to board viewers
+      // Get board slug for the post
+      const { data: postWithBoard } = await supabaseAdmin
+        .from("posts")
+        .select("board:boards!board_id(slug)")
+        .eq("id", postId)
+        .single();
+      
+      if (postWithBoard && postWithBoard.board && postWithBoard.board.slug) {
+        emitPostUpdated(postId, postWithBoard.board.slug, { status: newStatus });
+        console.log(`📡 Emitted post:status_changed event for board: ${postWithBoard.board.slug}`);
+      }
+      
       return data;
     } catch (error) {
       console.error("❌ Update status error:", error);
@@ -288,9 +399,10 @@ class PostService {
    */
   async deletePost(postId, userId, userRole) {
     try {
+      // Get post details including board info before deletion
       const { data: post } = await supabaseAdmin
         .from("posts")
-        .select("author_id, title")
+        .select("author_id, title, board_id, board:boards!board_id(slug)")
         .eq("id", postId)
         .single();
 
@@ -298,7 +410,7 @@ class PostService {
         throw new Error("Post not found");
       }
 
-      if (userRole !== "admin" && post.author_id !== userId) {
+      if (userRole !== "admin" && userRole !== "owner" && post.author_id !== userId) {
         throw new Error("Access denied");
       }
 
@@ -310,6 +422,27 @@ class PostService {
       if (error) throw error;
 
       console.log(`✅ Post deleted: ${post.title}`);
+      
+      // 🔴 Invalidate caches
+      // 1. Invalidate this specific post's cache
+      await cache.delete(`post:${postId}`);
+      // 2. Invalidate post list cache for this board
+      if (post.board && post.board.slug) {
+        await cache.deletePattern(`posts:board:${post.board.slug}:*`);
+        console.log(`🗑️  Post caches invalidated for board: ${post.board.slug}`);
+      }
+      // 3. Invalidate organization posts cache (for admin dashboard)
+      if (post.organization_id) {
+        await cache.delete(`posts:org:${post.organization_id}:all`);
+        console.log(`🗑️  Organization posts cache invalidated: ${post.organization_id}`);
+      }
+      
+      // 📡 Emit real-time event to board viewers
+      if (post.board && post.board.slug) {
+        emitPostDeleted(postId, post.board.slug);
+        console.log(`📡 Emitted post:deleted event for board: ${post.board.slug}`);
+      }
+      
       return true;
     } catch (error) {
       console.error("❌ Delete post error:", error);
@@ -334,7 +467,34 @@ class PostService {
         // Remove upvote
         await supabaseAdmin.from("upvotes").delete().eq("id", existing.id);
 
+        // Get updated upvote count
+        const { count } = await supabaseAdmin
+          .from("upvotes")
+          .select("*", { count: "exact", head: true })
+          .eq("post_id", postId);
+
         console.log("✅ Upvote removed");
+        
+        // 🔴 Invalidate post cache (upvote count changed)
+        await cache.delete(`post:${postId}`);
+        
+        // Get board slug and organization_id for cache invalidation
+        const { data: postWithBoard } = await supabaseAdmin
+          .from("posts")
+          .select("board:boards!board_id(slug), organization_id")
+          .eq("id", postId)
+          .single();
+        
+        // 🔴 Invalidate organization posts cache (upvote count changed)
+        if (postWithBoard?.organization_id) {
+          await cache.delete(`posts:org:${postWithBoard.organization_id}:all`);
+        }
+        
+        const boardSlug = postWithBoard?.board?.slug;
+        
+        // 📡 Emit Socket.io event
+        emitPostUpvoted(postId, false, count || 0, boardSlug);
+        
         return { upvoted: false };
       } else {
         // Add upvote
@@ -342,7 +502,34 @@ class PostService {
           .from("upvotes")
           .insert([{ post_id: postId, user_id: userId }]);
 
+        // Get updated upvote count
+        const { count } = await supabaseAdmin
+          .from("upvotes")
+          .select("*", { count: "exact", head: true })
+          .eq("post_id", postId);
+
         console.log("✅ Upvote added");
+        
+        // 🔴 Invalidate post cache (upvote count changed)
+        await cache.delete(`post:${postId}`);
+        
+        // Get board slug and organization_id for cache invalidation
+        const { data: postWithBoard } = await supabaseAdmin
+          .from("posts")
+          .select("board:boards!board_id(slug), organization_id")
+          .eq("id", postId)
+          .single();
+        
+        // 🔴 Invalidate organization posts cache (upvote count changed)
+        if (postWithBoard?.organization_id) {
+          await cache.delete(`posts:org:${postWithBoard.organization_id}:all`);
+        }
+        
+        const boardSlug = postWithBoard?.board?.slug;
+        
+        // 📡 Emit Socket.io event
+        emitPostUpvoted(postId, true, count || 0, boardSlug);
+        
         return { upvoted: true };
       }
     } catch (error) {
@@ -352,16 +539,31 @@ class PostService {
   }
 
   /**
-   * Get comments for a post
+   * Get comments for a post (with likes and user's like status)
+   * 🔴 CACHED: TTL 5 minutes (user-specific)
    */
-  async getComments(postId) {
+  async getComments(postId, userId = null) {
     try {
+      // 🔴 CACHE KEY: comments:post:{postId}:user:{userId}
+      // Include userId because like status is user-specific
+      const userIdKey = userId || 'anonymous';
+      const cacheKey = `comments:post:${postId}:user:${userIdKey}`;
+      
+      // Try to get from cache first
+      const cachedComments = await cache.get(cacheKey);
+      if (cachedComments) {
+        console.log(`🔴 Comments cache HIT for post: ${postId} (${cachedComments.length} comments)`);
+        return cachedComments;
+      }
+
+      console.log(`❌ Comments cache MISS for post: ${postId}`);
+
       const { data, error } = await supabaseAdmin
         .from("comments")
         .select(
           `
           *,
-          author:users!author_id(id, name, email, avatar_url, role)
+          author:users!author_id(id, name, email, avatar_url)
         `,
         )
         .eq("post_id", postId)
@@ -369,7 +571,28 @@ class PostService {
 
       if (error) throw error;
 
+      // If userId is provided, get user's likes for these comments
+      if (userId && data.length > 0) {
+        const commentIds = data.map(c => c.id);
+        const { data: likes } = await supabaseAdmin
+          .from("comment_likes")
+          .select("comment_id")
+          .eq("user_id", userId)
+          .in("comment_id", commentIds);
+
+        const likedCommentIds = new Set(likes?.map(l => l.comment_id) || []);
+        
+        // Add user_has_liked field to each comment
+        data.forEach(comment => {
+          comment.user_has_liked = likedCommentIds.has(comment.id);
+        });
+      }
+
       console.log(`✅ Retrieved ${data.length} comments`);
+      
+      // 🔴 Cache the result for 5 minutes (300 seconds)
+      await cache.set(cacheKey, data, 300);
+      
       return data;
     } catch (error) {
       console.error("❌ Get comments error:", error);
@@ -378,9 +601,9 @@ class PostService {
   }
 
   /**
-   * Add comment
+   * Add comment (supports replies via parent_id)
    */
-  async addComment(postId, content, userId, isAdmin = false) {
+  async addComment(postId, content, userId, isAdmin = false, parentId = null) {
     try {
       const { data, error } = await supabaseAdmin
         .from("comments")
@@ -390,12 +613,13 @@ class PostService {
             author_id: userId,
             content,
             is_admin: isAdmin,
+            parent_id: parentId,
           },
         ])
         .select(
           `
           *,
-          author:users!author_id(id, name, email, avatar_url, role)
+          author:users!author_id(id, name, email, avatar_url)
         `,
         )
         .single();
@@ -403,9 +627,120 @@ class PostService {
       if (error) throw error;
 
       console.log("✅ Comment added");
+      
+      // 🔴 Invalidate caches
+      // 1. Invalidate post cache (comment count changed)
+      await cache.delete(`post:${postId}`);
+      // 2. Invalidate ALL comment caches for this post (all users)
+      await cache.deletePattern(`comments:post:${postId}:*`);
+      console.log(`🗑️  Comment caches invalidated for post: ${postId}`);
+      
+      // 📡 Emit Socket.io event
+      emitCommentNew(postId, data);
+      
+      // Also update comment count for the post
+      const { count } = await supabaseAdmin
+        .from("comments")
+        .select("*", { count: "exact", head: true })
+        .eq("post_id", postId);
+      
+      // Get board slug for emitting to board room
+      const { data: postWithBoard } = await supabaseAdmin
+        .from("posts")
+        .select("board:boards!board_id(slug)")
+        .eq("id", postId)
+        .single();
+      
+      const boardSlug = postWithBoard?.board?.slug;
+      emitPostCommentCount(postId, count || 0, boardSlug);
+      
       return data;
     } catch (error) {
       console.error("❌ Add comment error:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Toggle like on a comment
+   */
+  async toggleCommentLike(commentId, userId) {
+    try {
+      // Get comment's post_id for cache invalidation
+      const { data: comment } = await supabaseAdmin
+        .from("comments")
+        .select("post_id")
+        .eq("id", commentId)
+        .single();
+
+      // Check if user already liked the comment
+      const { data: existingLike } = await supabaseAdmin
+        .from("comment_likes")
+        .select("id")
+        .eq("comment_id", commentId)
+        .eq("user_id", userId)
+        .single();
+
+      if (existingLike) {
+        // Unlike - remove the like
+        const { error } = await supabaseAdmin
+          .from("comment_likes")
+          .delete()
+          .eq("comment_id", commentId)
+          .eq("user_id", userId);
+
+        if (error) throw error;
+
+        console.log("✅ Comment unliked");
+        
+        // Get updated like count
+        const { count: unlikeCount } = await supabaseAdmin
+          .from("comment_likes")
+          .select("*", { count: "exact", head: true })
+          .eq("comment_id", commentId);
+        
+        // 🔴 Invalidate comment caches for all users (like count changed)
+        if (comment?.post_id) {
+          await cache.deletePattern(`comments:post:${comment.post_id}:*`);
+          
+          // 📡 Emit Socket.io event
+          emitCommentLiked(comment.post_id, commentId, false, unlikeCount || 0);
+        }
+        
+        return { liked: false };
+      } else {
+        // Like - add the like
+        const { error } = await supabaseAdmin
+          .from("comment_likes")
+          .insert([
+            {
+              comment_id: commentId,
+              user_id: userId,
+            },
+          ]);
+
+        if (error) throw error;
+
+        console.log("✅ Comment liked");
+        
+        // Get updated like count
+        const { count: likeCount } = await supabaseAdmin
+          .from("comment_likes")
+          .select("*", { count: "exact", head: true })
+          .eq("comment_id", commentId);
+        
+        // 🔴 Invalidate comment caches for all users (like count changed)
+        if (comment?.post_id) {
+          await cache.deletePattern(`comments:post:${comment.post_id}:*`);
+          
+          // 📡 Emit Socket.io event
+          emitCommentLiked(comment.post_id, commentId, true, likeCount || 0);
+        }
+        
+        return { liked: true };
+      }
+    } catch (error) {
+      console.error("❌ Toggle comment like error:", error);
       throw error;
     }
   }
@@ -417,7 +752,7 @@ class PostService {
     try {
       const { data: comment } = await supabaseAdmin
         .from("comments")
-        .select("author_id")
+        .select("author_id, post_id")
         .eq("id", commentId)
         .single();
 
@@ -425,7 +760,7 @@ class PostService {
         throw new Error("Comment not found");
       }
 
-      if (userRole !== "admin" && comment.author_id !== userId) {
+      if (userRole !== "admin" && userRole !== "owner" && comment.author_id !== userId) {
         throw new Error("Access denied");
       }
 
@@ -437,6 +772,35 @@ class PostService {
       if (error) throw error;
 
       console.log("✅ Comment deleted");
+      
+      // 🔴 Invalidate caches
+      if (comment.post_id) {
+        // 1. Invalidate post cache (comment count changed)
+        await cache.delete(`post:${comment.post_id}`);
+        // 2. Invalidate ALL comment caches for this post (all users)
+        await cache.deletePattern(`comments:post:${comment.post_id}:*`);
+        console.log(`🗑️  Comment caches invalidated for post: ${comment.post_id}`);
+        
+        // 📡 Emit Socket.io event
+        emitCommentDeleted(comment.post_id, commentId);
+        
+        // Also update comment count for the post
+        const { count } = await supabaseAdmin
+          .from("comments")
+          .select("*", { count: "exact", head: true })
+          .eq("post_id", comment.post_id);
+        
+        // Get board slug for emitting to board room
+        const { data: postWithBoard } = await supabaseAdmin
+          .from("posts")
+          .select("board:boards!board_id(slug)")
+          .eq("id", comment.post_id)
+          .single();
+        
+        const boardSlug = postWithBoard?.board?.slug;
+        emitPostCommentCount(comment.post_id, count || 0, boardSlug);
+      }
+      
       return true;
     } catch (error) {
       console.error("❌ Delete comment error:", error);

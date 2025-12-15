@@ -54,6 +54,10 @@ router.post(
   commentValidation,
   postController.addComment,
 );
+router.post(
+  "/posts/:postId/comments/:commentId/like",
+  postController.toggleCommentLike,
+);
 router.delete(
   "/posts/:postId/comments/:commentId",
   postController.deleteComment,

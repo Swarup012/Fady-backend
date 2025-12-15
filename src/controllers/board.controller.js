@@ -16,7 +16,8 @@ class BoardController {
       console.log('   Job Role:', jobRole);
       console.log('   Current Org ID:', req.user.current_organization_id);
 
-      const boards = await boardService.getAllBoards(userId, jobRole);
+      // ✅ Pass organization_role to determine if filtering should apply
+      const boards = await boardService.getAllBoards(userId, jobRole, userOrgRole);
 
       return ResponseUtil.success(res, "Boards retrieved successfully", {
         boards,
@@ -62,15 +63,40 @@ class BoardController {
 
   async getPublicBoards(req, res, next) {
     try {
-      const { data, error } = await supabaseAdmin
+      // Get organization from subdomain
+      const subdomain = req.headers['x-subdomain'];
+      
+      let query = supabaseAdmin
         .from("boards")
         .select("*")
-        .eq("is_private", false)
-        .order("created_at", { ascending: false });
+        .eq("is_private", false);
+
+      // Filter by organization if subdomain is provided
+      if (subdomain) {
+        // First, get the organization ID from the subdomain
+        const { data: orgData, error: orgError } = await supabaseAdmin
+          .from("organizations")
+          .select("id")
+          .eq("subdomain", subdomain)
+          .single();
+
+        if (orgError || !orgData) {
+          console.log(`⚠️ No organization found for subdomain: ${subdomain}`);
+          return ResponseUtil.success(res, "No public boards found", {
+            boards: [],
+            count: 0,
+          });
+        }
+
+        query = query.eq("organization_id", orgData.id);
+        console.log(`🔍 Filtering boards for organization: ${subdomain} (${orgData.id})`);
+      }
+
+      const { data, error } = await query.order("created_at", { ascending: false });
 
       if (error) throw error;
 
-      console.log(`✅ Retrieved ${data.length} public boards`);
+      console.log(`✅ Retrieved ${data.length} public boards${subdomain ? ` for ${subdomain}` : ''}`);
 
       return ResponseUtil.success(res, "Public boards retrieved", {
         boards: data,
@@ -83,29 +109,51 @@ class BoardController {
   }
 
   /**
-   * Get single PUBLIC board by slug (no authentication required)
+   * Get single PUBLIC board by slug (optional authentication)
    * GET /api/public/boards/:slug
+   * - Public users: can only see public boards
+   * - Authenticated users (owner/admin): can see private boards from their org
    */
   async getPublicBoardBySlug(req, res, next) {
     try {
       const { slug } = req.params;
+      const user = req.user; // May be null if not authenticated
 
+      // First, try to get the board (public or private)
       const { data: board, error } = await supabaseAdmin
         .from("boards")
         .select("*")
         .eq("slug", slug)
-        .eq("is_private", false)
         .single();
 
       if (error || !board) {
+        return ResponseUtil.error(res, "Board not found", 404);
+      }
+
+      // If board is public, return it to everyone
+      if (!board.is_private) {
+        console.log(`✅ Retrieved public board: ${slug}`);
+        return ResponseUtil.success(res, "Board retrieved successfully", {
+          board,
+        });
+      }
+
+      // If board is private, check if user is authenticated and has access
+      if (!user) {
         return ResponseUtil.error(res, "Board not found or is private", 404);
       }
 
-      console.log(`✅ Retrieved public board: ${slug}`);
+      // Check if user is a member of the board's organization
+      if (user.current_organization_id !== board.organization_id) {
+        return ResponseUtil.error(res, "Board not found or is private", 404);
+      }
 
+      // User is in the same organization - allow access to private board
+      console.log(`✅ Retrieved private board for ${user.organization_role}: ${slug}`);
       return ResponseUtil.success(res, "Board retrieved successfully", {
         board,
       });
+
     } catch (error) {
       console.error("Get public board by slug error:", error);
       next(error);
@@ -113,26 +161,66 @@ class BoardController {
   }
 
   /**
-   * Get posts from a PUBLIC board (no authentication required)
+   * Get posts from a PUBLIC board (optional authentication)
    * GET /api/public/boards/:slug/posts
+   * - Public users: can only see posts from public boards
+   * - Authenticated users (owner/admin): can see posts from private boards in their org
    */
   async getPublicBoardPosts(req, res, next) {
     try {
       const { slug } = req.params;
+      const user = req.user; // May be null if not authenticated
 
-      // Get board and check if it's public
+      // Get board (public or private)
       const { data: board, error: boardError } = await supabaseAdmin
         .from("boards")
         .select("*")
         .eq("slug", slug)
-        .eq("is_private", false)
         .single();
 
       if (boardError || !board) {
+        return ResponseUtil.error(res, "Board not found", 404);
+      }
+
+      // If board is public, return posts to everyone
+      if (!board.is_private) {
+        // Get posts from this board
+        const { data: posts, error: postsError } = await supabaseAdmin
+          .from("posts")
+          .select(
+            `
+             *,
+             author:users!author_id(id, name, email),
+             board:boards!board_id(id, name, slug, color, icon)
+           `,
+          )
+          .eq("board_id", board.id)
+          .eq("is_archived", false)
+          .order("created_at", { ascending: false });
+
+        if (postsError) throw postsError;
+
+        console.log(
+          `✅ Retrieved ${posts.length} posts from public board: ${slug}`,
+        );
+
+        return ResponseUtil.success(res, "Posts retrieved", {
+          posts,
+          count: posts.length,
+        });
+      }
+
+      // Board is private - check if user is authenticated and has access
+      if (!user) {
         return ResponseUtil.error(res, "Board not found or is private", 404);
       }
 
-      // Get posts from this board
+      // Check if user is a member of the board's organization
+      if (user.current_organization_id !== board.organization_id) {
+        return ResponseUtil.error(res, "Board not found or is private", 404);
+      }
+
+      // User is in the same organization - allow access to private board posts
       const { data: posts, error: postsError } = await supabaseAdmin
         .from("posts")
         .select(
@@ -149,13 +237,14 @@ class BoardController {
       if (postsError) throw postsError;
 
       console.log(
-        `✅ Retrieved ${posts.length} posts from public board: ${slug}`,
+        `✅ Retrieved ${posts.length} posts from private board for ${user.organization_role}: ${slug}`,
       );
 
       return ResponseUtil.success(res, "Posts retrieved", {
         posts,
         count: posts.length,
       });
+
     } catch (error) {
       console.error("Get public board posts error:", error);
       next(error);
@@ -163,12 +252,15 @@ class BoardController {
   }
 
   /**
-   * Get single post from PUBLIC board (no authentication required)
+   * Get single post from PUBLIC board (optional authentication)
    * GET /api/public/posts/:id
+   * - Public users: can only see posts in public boards
+   * - Authenticated users (owner/admin): can see posts in private boards from their org
    */
   async getPublicPost(req, res, next) {
     try {
       const { id } = req.params;
+      const user = req.user; // May be null if not authenticated
 
       const { data: post, error } = await supabaseAdmin
         .from("posts")
@@ -176,7 +268,7 @@ class BoardController {
           `
            *,
            author:users!author_id(id, name, email, avatar_url),
-           board:boards!board_id(id, name, slug, color, icon, is_private)
+           board:boards!board_id(id, name, slug, color, icon, is_private, organization_id)
          `,
         )
         .eq("id", id)
@@ -186,12 +278,25 @@ class BoardController {
         return ResponseUtil.error(res, "Post not found", 404);
       }
 
-      // Check if board is public
-      if (post.board?.is_private) {
+      // If board is public, return post to everyone
+      if (!post.board?.is_private) {
+        return ResponseUtil.success(res, "Post retrieved", { post });
+      }
+
+      // Board is private - check if user is authenticated and has access
+      if (!user) {
         return ResponseUtil.error(res, "This post is in a private board", 403);
       }
 
+      // Check if user is a member of the board's organization
+      if (user.current_organization_id !== post.board.organization_id) {
+        return ResponseUtil.error(res, "This post is in a private board", 403);
+      }
+
+      // User is in the same organization - allow access to private board post
+      console.log(`✅ Retrieved private board post for ${user.organization_role}`);
       return ResponseUtil.success(res, "Post retrieved", { post });
+
     } catch (error) {
       console.error("Get public post error:", error);
       next(error);
@@ -283,7 +388,7 @@ class BoardController {
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { name, description, is_private, color, icon, category } = req.body;
+      const { name, description, is_private, color, icon, category, visible_to_roles } = req.body;
       const owner_id = req.user.id;
 
       // Get user's organization_id (if they have one)
@@ -301,6 +406,7 @@ class BoardController {
         category,
         owner_id,
         organization_id,
+        visible_to_roles, // ✅ Pass the role targeting array
       });
 
       return ResponseUtil.success(

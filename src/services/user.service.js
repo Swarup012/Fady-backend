@@ -1,5 +1,6 @@
 const { supabase, supabaseAdmin } = require('../config/supabase.config');
 const organizationService = require('./organization.service');
+const cache = require('./redis.service');
 
 const userService = {
   /**
@@ -59,6 +60,11 @@ const userService = {
         .select('id, name, subdomain, logo_url')
         .eq('id', organizationId)
         .single();
+
+      // 🔴 Invalidate all session caches for this user
+      // User switched org, so cached sessions are now stale
+      await cache.deletePattern(`user:session:*`);
+      console.log('🗑️  User session caches invalidated after organization switch');
 
       return {
         user,

@@ -85,10 +85,10 @@ router.post(
 // Board update/delete - only admin or owner
 router.put(
   "/:id",
-  authorize("admin"),
+  authorize(["admin", "owner"]),
   updateBoardValidation,
   boardController.updateBoard,
 );
-router.delete("/:id", authorize("admin"), boardController.deleteBoard);
+router.delete("/:id", authorize(["admin", "owner"]), boardController.deleteBoard);
 
 module.exports = router;

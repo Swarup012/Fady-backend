@@ -1,5 +1,8 @@
 const { supabase, supabaseAdmin } = require('../config/supabase.config');
 const config = require('../config/env.config');
+const cache = require('./redis.service');
+const emailService = require('./email.service');
+const crypto = require('crypto');
 
 class AuthService {
   /**
@@ -428,6 +431,14 @@ class AuthService {
   async logout(token) {
     try {
       console.log('🚪 Logging out user');
+      
+      // 🔴 Invalidate session cache for this token
+      const crypto = require('crypto');
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex').substring(0, 32);
+      const sessionCacheKey = `user:session:${tokenHash}`;
+      await cache.delete(sessionCacheKey);
+      console.log('🗑️  Session cache invalidated');
+      
       const { error } = await supabase.auth.admin.signOut(token);
       if (error) {
         console.error('⚠️ Logout error:', error);
@@ -511,6 +522,12 @@ class AuthService {
         }
       }
 
+      // 🔴 Invalidate all session caches for this user
+      // Since we don't have the token, we invalidate by pattern
+      // Note: This will clear all sessions for this user across all devices
+      await cache.deletePattern(`user:session:*`);
+      console.log('🗑️  User session caches invalidated after profile update');
+      
       console.log('✅ Profile updated:', userId);
       return profile;
     } catch (error) {
@@ -524,15 +541,53 @@ class AuthService {
    */
   async forgotPassword(email) {
     try {
-      console.log('📧 Sending password reset email to:', email);
+      console.log('📧 Processing password reset request for:', email);
       
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${config.frontendUrl}/reset-password`
-      });
+      // Check if user exists
+      const { data: user, error: userError } = await supabaseAdmin
+        .from('users')
+        .select('id, email, name')
+        .eq('email', email)
+        .maybeSingle();
 
-      if (error) throw error;
-      console.log('✅ Password reset email sent');
-      return true;
+      if (userError) {
+        console.error('❌ Database error checking user:', userError);
+        // Don't reveal database errors to client
+        return { success: true };
+      }
+
+      if (!user) {
+        // Don't reveal if user exists or not (security best practice)
+        console.log('⚠️ User not found, but not revealing this to client');
+        return { success: true };
+      }
+
+      console.log('✅ User found:', user.email);
+
+      // Generate secure random token
+      const resetToken = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+
+      // Store token in database
+      const { error: tokenError } = await supabaseAdmin
+        .from('password_reset_tokens')
+        .insert({
+          user_id: user.id,
+          token: resetToken,
+          expires_at: expiresAt.toISOString(),
+          used: false
+        });
+
+      if (tokenError) {
+        console.error('❌ Error storing reset token:', tokenError);
+        throw new Error('Failed to generate reset token');
+      }
+
+      // Send password reset email using Resend
+      await emailService.sendPasswordResetEmail(user.email, resetToken, user.name);
+
+      console.log('✅ Password reset email sent successfully');
+      return { success: true };
     } catch (error) {
       console.error('❌ Forgot password error:', error);
       throw error;
@@ -540,22 +595,83 @@ class AuthService {
   }
 
   /**
-   * Reset password
+   * Reset password with token validation
    */
   async resetPassword(token, newPassword) {
     try {
-      console.log('🔄 Resetting password');
+      console.log('🔄 Validating reset token and updating password');
       
-      const { error } = await supabase.auth.updateUser({
-        password: newPassword
-      });
+      // Validate token exists and is not expired or used
+      const { data: resetToken, error: tokenError } = await supabaseAdmin
+        .from('password_reset_tokens')
+        .select('id, user_id, expires_at, used')
+        .eq('token', token)
+        .maybeSingle();
 
-      if (error) throw error;
+      if (tokenError || !resetToken) {
+        throw new Error('Invalid or expired reset token');
+      }
+
+      if (resetToken.used) {
+        throw new Error('This reset token has already been used');
+      }
+
+      if (new Date(resetToken.expires_at) < new Date()) {
+        throw new Error('Reset token has expired');
+      }
+
+      // Update user password using Supabase Admin API
+      const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+        resetToken.user_id,
+        { password: newPassword }
+      );
+
+      if (updateError) {
+        console.error('❌ Error updating password:', updateError);
+        throw new Error('Failed to update password');
+      }
+
+      // Mark token as used
+      await supabaseAdmin
+        .from('password_reset_tokens')
+        .update({ used: true })
+        .eq('id', resetToken.id);
+
       console.log('✅ Password reset successful');
-      return true;
+      return { success: true };
     } catch (error) {
       console.error('❌ Reset password error:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Verify reset token validity
+   */
+  async verifyResetToken(token) {
+    try {
+      const { data: resetToken, error } = await supabaseAdmin
+        .from('password_reset_tokens')
+        .select('id, expires_at, used')
+        .eq('token', token)
+        .maybeSingle();
+
+      if (error || !resetToken) {
+        return { valid: false, message: 'Invalid token' };
+      }
+
+      if (resetToken.used) {
+        return { valid: false, message: 'Token already used' };
+      }
+
+      if (new Date(resetToken.expires_at) < new Date()) {
+        return { valid: false, message: 'Token expired' };
+      }
+
+      return { valid: true };
+    } catch (error) {
+      console.error('❌ Error verifying token:', error);
+      return { valid: false, message: 'Validation error' };
     }
   }
 

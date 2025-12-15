@@ -4,6 +4,7 @@ const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const validate = require('../middleware/validate.middleware');
 const validationRules = require('../utils/validation.util');
+const upload = require('../middleware/upload.middleware');
 
 // Public routes
 router.post(
@@ -29,11 +30,13 @@ router.post(
 
 router.post(
   '/reset-password',
-  authenticate,
   validationRules.resetPassword,
   validate,
   authController.resetPassword
 );
+
+// Verify reset token validity
+router.get('/verify-reset-token', authController.verifyResetToken);
 
 router.post('/refresh', authController.refreshSession);
 
@@ -57,6 +60,13 @@ router.put(
   validationRules.updateProfile,
   validate,
   authController.updateProfile
+);
+
+// Upload avatar (with file upload)
+router.post(
+  '/upload-avatar',
+  upload.single('avatar'),
+  authController.uploadAvatar
 );
 
 // Update user role (post-auth role selection)

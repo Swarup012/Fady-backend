@@ -37,6 +37,15 @@ router.get(
   roadmapController.getRoadmapItems
 );
 
+// Get ALL roadmap items across all boards (Admin & Owner)
+// MUST BE BEFORE /roadmap/:itemId to avoid route collision
+router.get(
+  '/roadmap/all',
+  authenticate,
+  authorize(['admin', 'owner']),
+  roadmapController.getAllRoadmapItems
+);
+
 // Get single roadmap item
 router.get(
   '/roadmap/:itemId',

@@ -49,41 +49,15 @@ const injectOrganization = async (req, res, next) => {
         if (memberError || !membership) {
           console.warn(`⚠️ User ${req.user.email} tried to access ${organization.name} but is not a member`);
           
-          // Instead of blocking, fall back to user's current organization
-          console.log(`🔄 Falling back to user's current organization...`);
-          const { data: user } = await supabaseAdmin
-            .from('users')
-            .select('current_organization_id')
-            .eq('id', req.user.id)
-            .single();
-
-          if (user?.current_organization_id) {
-            const { data: currentOrg } = await supabaseAdmin
-              .from('organizations')
-              .select('*')
-              .eq('id', user.current_organization_id)
-              .single();
-
-            if (currentOrg) {
-              const { data: currentMembership } = await supabaseAdmin
-                .from('organization_members')
-                .select('role')
-                .eq('user_id', req.user.id)
-                .eq('organization_id', currentOrg.id)
-                .single();
-
-              req.organization = currentOrg;
-              req.organizationRole = currentMembership?.role;
-              console.log(`✅ Using user's current org: ${currentOrg.name} as ${currentMembership?.role}`);
-              return next();
-            }
-          }
-
-          // If no fallback available, return error
+          // INVITE-ONLY SYSTEM: Redirect non-members to public feedback page
+          // They can submit feedback without being a member
           return res.status(403).json({
             success: false,
-            error: 'You do not have access to this organization',
-            message: 'You are not a member of this organization'
+            error: 'access_denied',
+            message: 'You do not have access to this organization. This workspace is invite-only.',
+            redirect: '/features-request',
+            organizationName: organization.name,
+            organizationSlug: organization.subdomain
           });
         }
 
@@ -159,7 +133,61 @@ const requireOrganization = (req, res, next) => {
   next();
 };
 
+/**
+ * Middleware to check if user is a member of the organization (Invite-only system)
+ * Use this for protected routes that require organization membership
+ * Returns 403 with redirect info if user is not a member
+ */
+const requireOrganizationMembership = async (req, res, next) => {
+  try {
+    // Must have organization context and be authenticated
+    if (!req.organization) {
+      return res.status(400).json({
+        success: false,
+        error: 'Organization context required'
+      });
+    }
+
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    // Check if user is a member of this organization
+    const { data: membership, error } = await supabaseAdmin
+      .from('organization_members')
+      .select('role')
+      .eq('user_id', req.user.id)
+      .eq('organization_id', req.organization.id)
+      .single();
+
+    if (error || !membership) {
+      return res.status(403).json({
+        success: false,
+        error: 'access_denied',
+        message: 'You do not have access to this organization. This workspace is invite-only.',
+        redirect: '/features-request',
+        organizationName: req.organization.name,
+        organizationSlug: req.organization.subdomain
+      });
+    }
+
+    // User is a member - attach role and continue
+    req.organizationRole = membership.role;
+    next();
+  } catch (error) {
+    console.error('❌ requireOrganizationMembership error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to verify organization membership'
+    });
+  }
+};
+
 module.exports = { 
   injectOrganization,
-  requireOrganization
+  requireOrganization,
+  requireOrganizationMembership
 };

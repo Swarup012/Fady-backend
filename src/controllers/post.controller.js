@@ -148,7 +148,7 @@ class PostController {
         id,
         updates,
         req.user.id,
-        req.user.role,
+        req.user.organization_role,
       );
 
       return ResponseUtil.success(res, "Post updated successfully", { post });
@@ -202,7 +202,7 @@ class PostController {
     try {
       const { id } = req.params;
 
-      await postService.deletePost(id, req.user.id, req.user.role);
+      await postService.deletePost(id, req.user.id, req.user.organization_role);
 
       return ResponseUtil.success(res, "Post deleted successfully");
     } catch (error) {
@@ -234,13 +234,15 @@ class PostController {
   }
 
   /**
-   * Get comments
+   * Get comments (with user's like status)
    * GET /api/posts/:id/comments
    */
   async getComments(req, res, next) {
     try {
       const { id } = req.params;
-      const comments = await postService.getComments(id);
+      // Support both authenticated users and guests (req.user may be undefined for public access)
+      const userId = req.user ? req.user.id : null;
+      const comments = await postService.getComments(id, userId);
 
       return ResponseUtil.success(res, "Comments retrieved successfully", {
         comments,
@@ -253,7 +255,7 @@ class PostController {
   }
 
   /**
-   * Add comment
+   * Add comment (supports replies via parent_id)
    * POST /api/posts/:id/comments
    */
   async addComment(req, res, next) {
@@ -264,14 +266,15 @@ class PostController {
       }
 
       const { id } = req.params;
-      const { content } = req.body;
-      const isAdmin = req.user.role === "admin";
+      const { content, parent_id } = req.body;
+      const isAdmin = req.user.organization_role === "admin" || req.user.organization_role === "owner";
 
       const comment = await postService.addComment(
         id,
         content,
         req.user.id,
         isAdmin,
+        parent_id || null,
       );
 
       return ResponseUtil.success(
@@ -287,6 +290,26 @@ class PostController {
   }
 
   /**
+   * Toggle like on a comment
+   * POST /api/posts/:postId/comments/:commentId/like
+   */
+  async toggleCommentLike(req, res, next) {
+    try {
+      const { commentId } = req.params;
+      const result = await postService.toggleCommentLike(commentId, req.user.id);
+
+      return ResponseUtil.success(
+        res,
+        result.liked ? "Comment liked successfully" : "Comment unliked successfully",
+        result,
+      );
+    } catch (error) {
+      console.error("Toggle comment like controller error:", error);
+      next(error);
+    }
+  }
+
+  /**
    * Delete comment
    * DELETE /api/posts/:postId/comments/:commentId
    */
@@ -294,7 +317,7 @@ class PostController {
     try {
       const { commentId } = req.params;
 
-      await postService.deleteComment(commentId, req.user.id, req.user.role);
+      await postService.deleteComment(commentId, req.user.id, req.user.organization_role);
 
       return ResponseUtil.success(res, "Comment deleted successfully");
     } catch (error) {

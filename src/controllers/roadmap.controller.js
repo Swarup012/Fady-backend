@@ -3,6 +3,30 @@ const roadmapService = require('../services/roadmap.service.js');
 const  responseUtil  = require('../utils/response.util.js');
 
 const roadmapController = {
+  // GET /api/roadmap/all (Admin/Owner - All boards)
+  getAllRoadmapItems: async (req, res) => {
+    try {
+      const { status, category, isPublic, boardSlug } = req.query;
+      const organizationId = req.user?.current_organization_id;
+
+      if (!organizationId) {
+        return responseUtil.error(res, 'Organization not found', 400);
+      }
+
+      const filters = {};
+      if (status) filters.status = status.split(',');
+      if (category) filters.category = category;
+      if (isPublic !== undefined) filters.isPublic = isPublic === 'true';
+      if (boardSlug) filters.boardSlug = boardSlug;
+
+      const result = await roadmapService.getAllRoadmapItems(organizationId, filters);
+      return responseUtil.success(res, 'All roadmap items retrieved successfully', result);
+    } catch (error) {
+      console.error('Error fetching all roadmap items:', error);
+      return responseUtil.error(res, error.message, 500);
+    }
+  },
+
   // GET /api/boards/:boardSlug/roadmap (Public + Private)
   getRoadmapItems: async (req, res) => {
     try {
