@@ -1,11 +1,14 @@
 const express = require("express");
 const cors = require("cors");
+const fileUpload = require("express-fileupload");
 const config = require("./config/env.config");
 const authRoutes = require("./routes/auth.routes");
 const boardRoutes = require("./routes/board.routes");
 const postRoutes = require("./routes/post.routes");
 const publicRoutes = require("./routes/public.routes");
 const roadMapRoutes = require("./routes/roadmap.routes.js");
+const changelogRoutes = require("./routes/changelog.routes");
+const uploadRoutes = require("./routes/upload.routes");
 const userRoutes = require("./routes/user.routes");
 const organizationRoutes = require("./routes/organization.routes");
 const invitationRoutes = require("./routes/invitation.routes");
@@ -49,8 +52,35 @@ const corsOptions = {
 
 // Middleware
 app.use(cors(corsOptions));
+
+// ⚠️ CRITICAL: Stripe webhook MUST come BEFORE express.json()
+// Stripe needs raw body for signature verification
+// Register ONLY webhook route with raw body parsing
+const { handleStripeWebhook } = require("./webhooks/stripe.webhook");
+app.post("/api/stripe/webhook", express.raw({ type: 'application/json' }), handleStripeWebhook);
+
+// NOW we can parse JSON for all other routes (including other Stripe routes)
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+
+// Don't use express.urlencoded for routes that use multer
+app.use((req, res, next) => {
+  // Skip urlencoded parsing for avatar upload route (uses multer)
+  if (req.path === '/api/auth/upload-avatar') {
+    return next();
+  }
+  express.urlencoded({ extended: true })(req, res, next);
+});
+// Don't use express-fileupload for routes that use multer
+app.use((req, res, next) => {
+  // Skip express-fileupload for avatar upload route (uses multer)
+  if (req.path === '/api/auth/upload-avatar') {
+    return next();
+  }
+  fileUpload({
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max file size
+    abortOnLimit: true,
+  })(req, res, next);
+});
 
 // Cookie parser for cross-subdomain authentication
 const cookieParser = require('cookie-parser');
@@ -87,11 +117,17 @@ app.use("/api/auth", authRoutes);
 // ✅ INVITATION ROUTES (public verify, protected accept)
 app.use("/api/invitations", invitationRoutes);
 
+// ✅ STRIPE ROUTES (webhook already registered above with raw body)
+const stripeRoutes = require("./routes/stripe.routes");
+app.use("/api/stripe", stripeRoutes);
+
 // ✅ AUTHENTICATED ROUTES WITH ORGANIZATION CONTEXT
 // Organization middleware is added to validate subdomain access
 app.use("/api/boards", authenticate, injectOrganization, boardRoutes);
 app.use("/api/users", authenticate, injectOrganization, userRoutes);
 app.use("/api/organizations", organizationRoutes); // Organization routes handle their own auth (some routes are public)
+app.use("/api/upload", authenticate, injectOrganization, uploadRoutes);
+app.use("/api", authenticate, injectOrganization, changelogRoutes);
 app.use("/api", authenticate, injectOrganization, postRoutes);
 
 // 404 Handler

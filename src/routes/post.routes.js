@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const postController = require("../controllers/post.controller");
 const { authenticate } = require("../middleware/auth.middleware");
+const { checkPostLimit } = require("../middleware/plan-limits.middleware");
 const { body } = require("express-validator");
 
 // Validation rules
@@ -38,6 +39,7 @@ router.get("/posts", postController.getAllPosts);
 router.get("/boards/:slug/posts", postController.getPostsByBoard);
 router.post(
   "/boards/:slug/posts",
+  checkPostLimit, // ✅ Check post limit before creation
   createPostValidation,
   postController.createPost,
 );

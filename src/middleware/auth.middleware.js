@@ -32,7 +32,8 @@ const authenticate = async (req, res, next) => {
       fullToken: token.substring(0, 50) + '...',
     });
     
-    const cachedSession = await cache.get(sessionCacheKey);
+    // 🔧 DISABLED: Cache temporarily disabled to fix stale org data after invite acceptance
+    const cachedSession = null; // await cache.get(sessionCacheKey);
     if (cachedSession) {
       console.log(`🔴 Session cache HIT for user: ${cachedSession.email}`);
       console.log('🐛 DEBUG - Cached Session:', {

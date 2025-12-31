@@ -2,6 +2,7 @@ const app = require('./src/app');
 const config = require('./src/config/env.config');
 const { initializeRedis, testRedisConnection, closeRedis } = require('./src/config/redis.config');
 const { initializeSocket, closeSocket } = require('./src/socket/socket.config');
+const { validateStripeConfig } = require('./src/config/stripe.config');
 const http = require('http');
 
 const PORT = config.port;
@@ -31,6 +32,15 @@ server.listen(PORT, async () => {
   }
   
   console.log('🔌 Socket.io: Ready for real-time connections');
+  
+  // Validate Stripe configuration
+  try {
+    await validateStripeConfig();
+    console.log('💳 Stripe: Ready for payments');
+  } catch (error) {
+    console.log('⚠️  Stripe: Not configured (payments disabled)');
+  }
+  
   console.log('=================================');
 });
 

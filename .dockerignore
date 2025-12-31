@@ -1,0 +1,25 @@
+# Docker ignore file for Fady Backend
+node_modules
+npm-debug.log
+.env
+.env.local
+.git
+.gitignore
+*.md
+logs
+*.log
+
+# Test files
+test*.js
+check*.js
+debug*.js
+fix*.js
+manage*.js
+add-user-to-org.js
+run_migration.js
+
+# Development files
+term
+docker-compose.yml
+Dockerfile
+.dockerignore

@@ -259,6 +259,24 @@ class InvitationService {
         })
         .eq('id', invitation.id);
 
+      // 🔧 FIX: Set this organization as the user's current organization
+      // Also increment cache_version to invalidate cached sessions
+      const { error: updateUserError } = await supabaseAdmin
+        .from('users')
+        .update({ 
+          current_organization_id: invitation.organization_id,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId);
+
+      if (updateUserError) {
+        console.error('⚠️ Warning: Failed to set current_organization_id:', updateUserError);
+        // Don't throw - membership is created, just log the warning
+      } else {
+        console.log(`✅ Set organization ${invitation.organization_id} as current for user ${userId}`);
+        console.log(`🔄 Updated user timestamp to invalidate cached sessions`);
+      }
+
       console.log(`✅ User ${userEmail} accepted invitation to ${invitation.organization.name}`);
       return membership;
     } catch (error) {

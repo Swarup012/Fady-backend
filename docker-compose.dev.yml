@@ -4,11 +4,11 @@ services:
   # Redis Cache Service
   redis:
     image: redis:7-alpine
-    container_name: fady-redis
+    container_name: fady-redis-dev
     ports:
       - "6379:6379"
     volumes:
-      - redis-data:/data
+      - redis-data-dev:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     restart: unless-stopped
     healthcheck:
@@ -17,18 +17,18 @@ services:
       timeout: 3s
       retries: 3
     networks:
-      - fady-network
+      - fady-network-dev
 
-  # Backend API Service
+  # Backend API Service (Development mode with hot reload)
   backend:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: fady-backend
+      dockerfile: Dockerfile.dev
+    container_name: fady-backend-dev
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
       - PORT=3000
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -39,15 +39,19 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - fady-network
+      - fady-network-dev
     volumes:
-      # Mount logs directory for persistence
+      # Mount source code for hot reload
+      - ./src:/app/src
       - ./logs:/app/logs
+      # Exclude node_modules
+      - /app/node_modules
+    command: npm run dev
 
 networks:
-  fady-network:
+  fady-network-dev:
     driver: bridge
 
 volumes:
-  redis-data:
+  redis-data-dev:
     driver: local

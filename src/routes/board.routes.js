@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const boardController = require("../controllers/board.controller");
 const { authenticate, authorize } = require("../middleware/auth.middleware");
+const { checkBoardLimit } = require("../middleware/plan-limits.middleware");
 const { body } = require("express-validator");
 const publicRoutes = require("./public.routes");
 
@@ -75,9 +76,10 @@ router.get("/", boardController.getAllBoards);
 router.get("/check-slug/:slug", boardController.checkSlug);
 router.get("/:slug", boardController.getBoardBySlug);
 
-// Board creation - any authenticated user can create
+// Board creation - any authenticated user can create (with plan limits)
 router.post(
   "/",
+  checkBoardLimit, // ✅ Check board limit before creation
   createBoardValidation,
   boardController.createBoard,
 );
