@@ -56,15 +56,16 @@ class PostService {
    * Get all posts for a board
    * 🔴 CACHED: TTL 5 minutes
    */
-  async getPostsByBoard(boardSlug, filters = {}) {
+  async getPostsByBoard(boardSlug, filters = {}, organizationId = null) {
     try {
-      // 🔴 CACHE KEY: posts:board:{slug}:{sortBy}:{status}:{search}
+      // 🔴 CACHE KEY: posts:board:{slug}:{sortBy}:{status}:{search}:{organizationId}
       const sortBy = filters.sortBy || "created_at";
       const status = filters.status || "all";
       const search = filters.search || "none";
       const sortOrder = filters.sortOrder || "desc";
+      const orgKey = organizationId || "none";
       
-      const cacheKey = `posts:board:${boardSlug}:${sortBy}:${sortOrder}:${status}:${search}`;
+      const cacheKey = `posts:board:${boardSlug}:${sortBy}:${sortOrder}:${status}:${search}:${orgKey}`;
       
       // Try to get from cache first
       const cachedPosts = await cache.get(cacheKey);
@@ -75,14 +76,20 @@ class PostService {
 
       console.log(`❌ Post list cache MISS for board: ${boardSlug}`);
 
-      // Get board first
-      const { data: board, error: boardError } = await supabaseAdmin
+      // Get board first - filter by organization if provided
+      let boardQuery = supabaseAdmin
         .from("boards")
         .select("id")
-        .eq("slug", boardSlug)
-        .single();
+        .eq("slug", boardSlug);
+
+      if (organizationId) {
+        boardQuery = boardQuery.eq("organization_id", organizationId);
+      }
+
+      const { data: board, error: boardError } = await boardQuery.single();
 
       if (boardError || !board) {
+        console.error(`❌ Board not found - slug: ${boardSlug}, organization_id: ${organizationId}`, boardError);
         throw new Error("Board not found");
       }
 
@@ -804,6 +811,131 @@ class PostService {
       return true;
     } catch (error) {
       console.error("❌ Delete comment error:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync post status to all linked roadmap items
+   * When a post status changes, update all roadmap_items that link to it
+   */
+  async syncPostStatusToRoadmaps(postId, newStatus) {
+    try {
+      console.log(`🔄 Syncing post ${postId} status (${newStatus}) to roadmap items...`);
+
+      // Map post status to roadmap status
+      // Post statuses: open, under-review, planned, in-progress, completed, closed
+      // Roadmap statuses: planned, in_progress, in_review, completed, cancelled
+      const statusMap = {
+        'open': 'planned',
+        'under-review': 'in_review',
+        'planned': 'planned',
+        'in-progress': 'in_progress',
+        'completed': 'completed',
+        'closed': 'cancelled'
+      };
+      const roadmapStatus = statusMap[newStatus] || 'planned';
+
+      // Find all roadmap items linked to this post
+      const { data: items, error: fetchError } = await supabaseAdmin
+        .from('roadmap_items')
+        .select('id, roadmap_id, organization_id')
+        .eq('linked_post_id', postId);
+
+      if (fetchError) {
+        console.error('Error fetching linked roadmap items:', fetchError);
+        throw fetchError;
+      }
+
+      if (!items || items.length === 0) {
+        console.log(`ℹ️ No roadmap items linked to post ${postId}`);
+        return;
+      }
+
+      console.log(`📝 Found ${items.length} roadmap item(s) to update to status: ${roadmapStatus}`);
+
+      // Update all linked roadmap items with the new status
+      const { error: updateError } = await supabaseAdmin
+        .from('roadmap_items')
+        .update({ status: roadmapStatus })
+        .eq('linked_post_id', postId);
+
+      if (updateError) {
+        console.error('Error updating roadmap items:', updateError);
+        throw updateError;
+      }
+
+      // Invalidate roadmap caches for affected organizations
+      const cache = require('./redis.service');
+      const orgIds = [...new Set(items.map(item => item.organization_id))];
+      for (const orgId of orgIds) {
+        await cache.delete(`roadmaps:org:${orgId}`);
+        await cache.deletePattern(`roadmap:org:${orgId}:*`);
+      }
+
+      console.log(`✅ Successfully synced status to ${items.length} roadmap item(s)`);
+      return items.length;
+    } catch (error) {
+      console.error('❌ syncPostStatusToRoadmaps error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get public roadmap posts (posts with roadmap statuses from public boards)
+   * Returns posts with statuses: planned, in-progress, under-review, completed
+   */
+  async getPublicRoadmapPosts(subdomain, filters = {}) {
+    try {
+      console.log('📍 Getting public roadmap posts for subdomain:', subdomain);
+
+      // Get organization by subdomain
+      const { data: org, error: orgError } = await supabaseAdmin
+        .from('organizations')
+        .select('id, name')
+        .eq('subdomain', subdomain)
+        .single();
+
+      if (orgError || !org) {
+        throw new Error('Organization not found');
+      }
+
+      // Build query for posts with roadmap statuses from public boards
+      let query = supabaseAdmin
+        .from('posts')
+        .select(`
+          *,
+          author:users!author_id(id, name, email, avatar_url),
+          board:boards!board_id(id, name, slug, color, icon, is_private)
+        `)
+        .eq('organization_id', org.id)
+        .eq('is_archived', false)
+        .in('status', ['planned', 'in-progress', 'under-review', 'completed']);
+
+      // Apply filters
+      if (filters.status) {
+        const statuses = filters.status.split(',');
+        query = query.in('status', statuses);
+      }
+      if (filters.category) {
+        query = query.eq('category', filters.category);
+      }
+
+      // Order by status priority and then by votes
+      query = query.order('created_at', { ascending: false });
+
+      const { data: posts, error } = await query;
+
+      if (error) throw error;
+
+      // Filter out posts from private boards
+      const publicPosts = posts.filter(post => !post.board?.is_private);
+
+      console.log(`✅ Retrieved ${publicPosts.length} public roadmap posts (filtered from ${posts.length} total)`);
+
+      return publicPosts;
+    } catch (error) {
+      console.error('❌ Get public roadmap posts error:', error);
       throw error;
     }
   }

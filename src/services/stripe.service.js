@@ -73,7 +73,7 @@ const stripeService = {
    * WHY: Stripe Checkout handles payment UI securely
    * SECURITY: Payment data never touches our servers
    */
-  async createCheckoutSession(organizationId, userId, priceId, successUrl, cancelUrl) {
+  async createCheckoutSession(organizationId, userId, priceId, successUrl, cancelUrl, enableTrial = true) {
     try {
       // Get user and organization data
       const { data: user } = await supabaseAdmin
@@ -103,6 +103,9 @@ const stripeService = {
       // Generate idempotency key to prevent duplicate sessions
       const idempotencyKey = `checkout_${organizationId}_${Date.now()}`;
 
+      // Determine if trial should be enabled
+      const shouldEnableTrial = enableTrial && STRIPE_CONFIG.trial.enabled;
+
       // Create Checkout Session
       const session = await stripe.checkout.sessions.create(
         {
@@ -110,13 +113,13 @@ const stripeService = {
           mode: 'subscription',
           line_items: [
             {
-              price: priceId || STRIPE_CONFIG.prices.monthly,
+              price: priceId || STRIPE_CONFIG.prices.starter_monthly,
               quantity: 1,
             },
           ],
           
           // Trial configuration
-          subscription_data: STRIPE_CONFIG.trial.enabled ? {
+          subscription_data: shouldEnableTrial ? {
             trial_period_days: STRIPE_CONFIG.trial.days,
             metadata: {
               organization_id: organizationId,
@@ -133,6 +136,7 @@ const stripeService = {
           metadata: {
             organization_id: organizationId,
             user_id: userId,
+            has_trial: shouldEnableTrial.toString(),
           },
 
           // Success/Cancel URLs
@@ -152,7 +156,7 @@ const stripeService = {
         }
       );
 
-      console.log(`✅ Checkout session created: ${session.id}`);
+      console.log(`✅ Checkout session created: ${session.id} (trial: ${shouldEnableTrial})`);
       return session;
     } catch (error) {
       console.error('Error creating checkout session:', error);

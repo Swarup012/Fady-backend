@@ -3,6 +3,7 @@ const config = require('./src/config/env.config');
 const { initializeRedis, testRedisConnection, closeRedis } = require('./src/config/redis.config');
 const { initializeSocket, closeSocket } = require('./src/socket/socket.config');
 const { validateStripeConfig } = require('./src/config/stripe.config');
+const { initializeScheduler, stopScheduler } = require('./src/jobs/scheduler');
 const http = require('http');
 
 const PORT = config.port;
@@ -15,6 +16,9 @@ const server = http.createServer(app);
 
 // Initialize Socket.io
 initializeSocket(server);
+
+// Store scheduled jobs for cleanup
+let scheduledJobs = null;
 
 server.listen(PORT, async () => {
   console.log('=================================');
@@ -41,12 +45,21 @@ server.listen(PORT, async () => {
     console.log('⚠️  Stripe: Not configured (payments disabled)');
   }
   
+  // Initialize cron jobs
+  try {
+    scheduledJobs = initializeScheduler();
+    console.log('🕐 Cron jobs: Initialized successfully');
+  } catch (error) {
+    console.error('⚠️  Cron jobs: Failed to initialize:', error.message);
+  }
+  
   console.log('=================================');
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM signal received: closing HTTP server');
+  if (scheduledJobs) stopScheduler(scheduledJobs);
   await closeSocket();
   await closeRedis();
   server.close(() => {
@@ -56,6 +69,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   console.log('SIGINT signal received: closing HTTP server');
+  if (scheduledJobs) stopScheduler(scheduledJobs);
   await closeSocket();
   await closeRedis();
   server.close(() => {

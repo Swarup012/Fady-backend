@@ -412,6 +412,34 @@ class EmailService {
       return { success: false, error: error.message };
     }
   }
+
+  /**
+   * Send feature completion notification email
+   * @param {string} email - Recipient email address
+   * @param {string} htmlContent - Pre-generated HTML content from email template service
+   * @param {string} subject - Email subject
+   */
+  async sendCompletionEmail(email, htmlContent, subject = '🎉 Feature Completed!') {
+    try {
+      const { data, error } = await resend.emails.send({
+        from: config.resendFromEmail || 'Feedy <onboarding@resend.dev>',
+        to: email,
+        subject: subject,
+        html: htmlContent,
+      });
+
+      if (error) {
+        console.error(`❌ Failed to send completion email to ${email}:`, error);
+        throw new Error(`Failed to send email: ${error.message}`);
+      }
+
+      console.log(`✅ Completion email sent to ${email}:`, data);
+      return { success: true, data };
+    } catch (error) {
+      console.error(`❌ Error sending completion email to ${email}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
 }
 
 module.exports = new EmailService();

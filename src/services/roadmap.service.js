@@ -18,19 +18,23 @@ const roadmapService = {
   getAllRoadmapItems: async (organizationId, filters = {}) => {
     try {
       console.log('Service: Fetching ALL roadmap items for organization:', organizationId);
+      console.log('Service: Filters:', filters);
 
       // 🔴 Build cache key based on filters
       const statusKey = filters.status?.length > 0 ? filters.status.join(',') : 'all';
       const categoryKey = filters.category || 'all';
       const publicKey = filters.isPublic !== undefined ? filters.isPublic : 'all';
       const boardKey = filters.boardSlug || 'all';
-      const cacheKey = `roadmap:org:${organizationId}:status:${statusKey}:cat:${categoryKey}:public:${publicKey}:board:${boardKey}`;
+      const postKey = filters.postId || 'all';
+      const cacheKey = `roadmap:org:${organizationId}:status:${statusKey}:cat:${categoryKey}:public:${publicKey}:board:${boardKey}:post:${postKey}`;
 
-      // 🔴 Check cache first
-      const cachedData = await cache.get(cacheKey);
-      if (cachedData) {
-        console.log(`🔴 Roadmap cache HIT for org: ${organizationId} (${cachedData.items.length} items)`);
-        return cachedData;
+      // 🔴 Check cache first (skip cache if filtering by postId for real-time data)
+      if (!filters.postId) {
+        const cachedData = await cache.get(cacheKey);
+        if (cachedData) {
+          console.log(`🔴 Roadmap cache HIT for org: ${organizationId} (${cachedData.items.length} items)`);
+          return cachedData;
+        }
       }
 
       console.log(`❌ Roadmap cache MISS for org: ${organizationId}`);
@@ -48,12 +52,14 @@ const roadmapService = {
             feedback:posts(id, title, status, upvotes)
           )
         `)
+        .eq('organization_id', organizationId)
         .order('created_at', { ascending: false });
 
       // Apply filters
       if (filters.status?.length > 0) query = query.in('status', filters.status);
       if (filters.category) query = query.eq('category', filters.category);
       if (filters.isPublic !== undefined) query = query.eq('is_public', filters.isPublic);
+      if (filters.postId) query = query.eq('linked_post_id', filters.postId);
       if (filters.boardSlug) {
         // If filtering by specific board, join with boards table
         const { data: board } = await supabaseAdmin
@@ -641,6 +647,427 @@ const roadmapService = {
       throw error;
     }
   },
+
+  /** ===============================
+   * MULTI-ROADMAP MANAGEMENT METHODS
+   * =============================== */
+
+  /**
+   * Get all roadmaps for an organization
+   */
+  getRoadmaps: async (organizationId) => {
+    try {
+      console.log('Service: Fetching roadmaps for organization:', organizationId);
+
+      // Cache key
+      const cacheKey = `roadmaps:org:${organizationId}`;
+      
+      // Check cache
+      const cachedData = await cache.get(cacheKey);
+      if (cachedData) {
+        console.log(`🔴 Roadmaps cache HIT for org: ${organizationId}`);
+        return cachedData;
+      }
+
+      // Use the helper function created in migration
+      const { data, error } = await supabaseAdmin
+        .rpc('get_roadmaps_with_counts', { org_id: organizationId });
+
+      if (error) {
+        console.error('Error fetching roadmaps:', error);
+        throw new Error('Failed to fetch roadmaps');
+      }
+
+      // Cache for 5 minutes
+      await cache.set(cacheKey, data, 300);
+      
+      return data;
+    } catch (error) {
+      console.error('Error in getRoadmaps:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Create a new roadmap
+   */
+  createRoadmap: async ({ organizationId, userId, name, description }) => {
+    try {
+      console.log('Service: Creating roadmap:', name, 'for org:', organizationId);
+
+      // Verify user is admin/owner
+      const { data: membership, error: memberError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('organization_id', organizationId)
+        .eq('user_id', userId)
+        .single();
+
+      if (memberError || !membership) {
+        throw new Error('Not a member of this organization');
+      }
+
+      if (!['admin', 'owner'].includes(membership.role)) {
+        throw new Error('Only admins and owners can create roadmaps');
+      }
+
+      // Check if this is the first roadmap
+      const { count: existingCount } = await supabaseAdmin
+        .from('roadmaps')
+        .select('id', { count: 'exact', head: true })
+        .eq('organization_id', organizationId)
+        .eq('is_archived', false);
+
+      const isFirstRoadmap = existingCount === 0;
+
+      // Create slug from name
+      const slug = name
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        + '-' + Math.random().toString(36).substring(2, 8);
+
+      // Insert roadmap
+      const { data: roadmap, error } = await supabaseAdmin
+        .from('roadmaps')
+        .insert({
+          organization_id: organizationId,
+          name,
+          slug,
+          description,
+          is_default: isFirstRoadmap,
+          is_archived: false
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error creating roadmap:', error);
+        throw new Error('Failed to create roadmap');
+      }
+
+      // Invalidate cache
+      await cache.delete(`roadmaps:org:${organizationId}`);
+
+      return roadmap;
+    } catch (error) {
+      console.error('Error in createRoadmap:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update a roadmap
+   */
+  updateRoadmap: async ({ roadmapId, organizationId, userId, name, description, is_default }) => {
+    try {
+      console.log('Service: Updating roadmap:', roadmapId);
+
+      // Get roadmap to verify organization
+      const { data: roadmap, error: fetchError } = await supabaseAdmin
+        .from('roadmaps')
+        .select('organization_id')
+        .eq('id', roadmapId)
+        .single();
+
+      if (fetchError || !roadmap) {
+        throw new Error('Roadmap not found');
+      }
+
+      // Verify user is admin/owner
+      const { data: membership, error: memberError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('organization_id', roadmap.organization_id)
+        .eq('user_id', userId)
+        .single();
+
+      if (memberError || !membership) {
+        throw new Error('Not a member of this organization');
+      }
+
+      if (!['admin', 'owner'].includes(membership.role)) {
+        throw new Error('Only admins and owners can update roadmaps');
+      }
+
+      // Build update object
+      const updates = {};
+      if (name !== undefined) updates.name = name;
+      if (description !== undefined) updates.description = description;
+      
+      // Handle is_default toggle
+      if (is_default === true) {
+        // Unset current default
+        await supabaseAdmin
+          .from('roadmaps')
+          .update({ is_default: false })
+          .eq('organization_id', roadmap.organization_id);
+        
+        updates.is_default = true;
+      }
+
+      // Update roadmap
+      const { data: updated, error } = await supabaseAdmin
+        .from('roadmaps')
+        .update(updates)
+        .eq('id', roadmapId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error updating roadmap:', error);
+        throw new Error('Failed to update roadmap');
+      }
+
+      // Invalidate cache
+      await cache.delete(`roadmaps:org:${roadmap.organization_id}`);
+
+      return updated;
+    } catch (error) {
+      console.error('Error in updateRoadmap:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Delete (archive) a roadmap
+   */
+  deleteRoadmap: async ({ roadmapId, organizationId, userId }) => {
+    try {
+      console.log('Service: Deleting roadmap:', roadmapId);
+
+      // Get roadmap to verify organization
+      const { data: roadmap, error: fetchError } = await supabaseAdmin
+        .from('roadmaps')
+        .select('organization_id, is_default')
+        .eq('id', roadmapId)
+        .single();
+
+      if (fetchError || !roadmap) {
+        throw new Error('Roadmap not found');
+      }
+
+      // Verify user is admin/owner
+      const { data: membership, error: memberError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('organization_id', roadmap.organization_id)
+        .eq('user_id', userId)
+        .single();
+
+      if (memberError || !membership) {
+        throw new Error('Not a member of this organization');
+      }
+
+      if (!['admin', 'owner'].includes(membership.role)) {
+        throw new Error('Only admins and owners can delete roadmaps');
+      }
+
+      // Archive instead of delete (soft delete)
+      const { error } = await supabaseAdmin
+        .from('roadmaps')
+        .update({ is_archived: true })
+        .eq('id', roadmapId);
+
+      if (error) {
+        console.error('Error deleting roadmap:', error);
+        throw new Error('Failed to delete roadmap');
+      }
+
+      // If this was the default roadmap, make another one default
+      if (roadmap.is_default) {
+        const { data: firstActive } = await supabaseAdmin
+          .from('roadmaps')
+          .select('id')
+          .eq('organization_id', roadmap.organization_id)
+          .eq('is_archived', false)
+          .order('created_at', { ascending: true })
+          .limit(1)
+          .single();
+
+        if (firstActive) {
+          await supabaseAdmin
+            .from('roadmaps')
+            .update({ is_default: true })
+            .eq('id', firstActive.id);
+        }
+      }
+
+      // Invalidate cache
+      await cache.delete(`roadmaps:org:${roadmap.organization_id}`);
+
+      return true;
+    } catch (error) {
+      console.error('Error in deleteRoadmap:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Add a post to a roadmap
+   */
+  addPostToRoadmap: async ({ postId, roadmapId, organizationId, userId, eta, notes }) => {
+    try {
+      console.log('Service: Adding post', postId, 'to roadmap', roadmapId);
+      console.log('Service: userId:', userId, 'organizationId:', organizationId);
+
+      // Get post details
+      const { data: post, error: postError } = await supabaseAdmin
+        .from('posts')
+        .select('title, description, status, board_id, boards(organization_id)')
+        .eq('id', postId)
+        .single();
+
+      if (postError || !post) {
+        console.error('Post not found:', postError);
+        throw new Error('Post not found');
+      }
+
+      const postOrgId = post.boards.organization_id;
+      console.log('Service: Post organization:', postOrgId);
+
+      // Verify user is member of the post's organization
+      const { data: membership, error: memberError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('organization_id', postOrgId)
+        .eq('user_id', userId)
+        .maybeSingle(); // Use maybeSingle() to avoid error when no row found
+
+      console.log('Service: Membership check:', { membership, memberError, userId, postOrgId });
+
+      if (memberError) {
+        console.error('Database error checking membership:', memberError);
+        throw new Error('Failed to verify organization membership');
+      }
+
+      if (!membership) {
+        console.error('User not a member:', { userId, postOrgId });
+        throw new Error('Not a member of this organization');
+      }
+
+      // Verify roadmap belongs to same organization
+      const { data: roadmap, error: roadmapError } = await supabaseAdmin
+        .from('roadmaps')
+        .select('organization_id')
+        .eq('id', roadmapId)
+        .single();
+
+      if (roadmapError || !roadmap || roadmap.organization_id !== postOrgId) {
+        throw new Error('Roadmap not found or not in same organization');
+      }
+
+      // Check if already added to this roadmap
+      const { data: existing } = await supabaseAdmin
+        .from('roadmap_items')
+        .select('id')
+        .eq('roadmap_id', roadmapId)
+        .eq('linked_post_id', postId)
+        .single();
+
+      if (existing) {
+        throw new Error('Post already added to this roadmap');
+      }
+
+      // Map post status to roadmap status
+      // Post statuses: open, under-review, planned, in-progress, completed, closed
+      // Roadmap statuses: planned, in_progress, in_review, completed, cancelled
+      const statusMap = {
+        'open': 'planned',
+        'under-review': 'in_review',
+        'planned': 'planned',
+        'in-progress': 'in_progress',
+        'completed': 'completed',
+        'closed': 'cancelled'
+      };
+      const roadmapStatus = statusMap[post.status] || 'planned';
+
+      // Create roadmap item
+      const { data: item, error } = await supabaseAdmin
+        .from('roadmap_items')
+        .insert({
+          organization_id: postOrgId,
+          board_id: post.board_id,
+          roadmap_id: roadmapId,
+          linked_post_id: postId,
+          title: post.title,
+          description: notes || post.description || 'Linked from feedback post',
+          status: roadmapStatus,
+          target_date: eta || null,
+          created_by: userId
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error adding post to roadmap:', error);
+        throw new Error('Failed to add post to roadmap');
+      }
+
+      // Invalidate caches
+      await cache.delete(`roadmaps:org:${postOrgId}`);
+      await cache.deletePattern(`roadmap:org:${postOrgId}:*`);
+
+      return item;
+    } catch (error) {
+      console.error('Error in addPostToRoadmap:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Remove a post from a roadmap
+   */
+  removePostFromRoadmap: async ({ postId, roadmapId, organizationId, userId }) => {
+    try {
+      console.log('Service: Removing post', postId, 'from roadmap', roadmapId);
+
+      // Get the roadmap item
+      const { data: item, error: fetchError } = await supabaseAdmin
+        .from('roadmap_items')
+        .select('id, organization_id')
+        .eq('roadmap_id', roadmapId)
+        .eq('linked_post_id', postId)
+        .single();
+
+      if (fetchError || !item) {
+        throw new Error('Post not found in this roadmap');
+      }
+
+      // Verify user is member
+      const { data: membership, error: memberError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('organization_id', item.organization_id)
+        .eq('user_id', userId)
+        .single();
+
+      if (memberError || !membership) {
+        throw new Error('Not authorized');
+      }
+
+      // Delete the roadmap item
+      const { error } = await supabaseAdmin
+        .from('roadmap_items')
+        .delete()
+        .eq('id', item.id);
+
+      if (error) {
+        console.error('Error removing post from roadmap:', error);
+        throw new Error('Failed to remove post from roadmap');
+      }
+
+      // Invalidate caches
+      await cache.delete(`roadmaps:org:${item.organization_id}`);
+      await cache.deletePattern(`roadmap:org:${item.organization_id}:*`);
+
+      return true;
+    } catch (error) {
+      console.error('Error in removePostFromRoadmap:', error);
+      throw error;
+    }
+  }
 };
 
 module.exports = roadmapService;

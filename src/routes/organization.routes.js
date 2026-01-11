@@ -3,6 +3,7 @@ const router = express.Router();
 const organizationController = require('../controllers/organization.controller');
 const invitationController = require('../controllers/invitation.controller');
 const { authenticate } = require('../middleware/auth.middleware');
+const { checkInvitationLimit } = require('../middleware/plan-limits.middleware');
 
 // Public routes (no authentication required)
 // Get organization by subdomain (for signup page to detect organization)
@@ -30,7 +31,7 @@ router.put('/:organizationId', organizationController.updateOrganization);
 router.get('/:organizationId/members', organizationController.getMembers);
 
 // Invite user to organization
-router.post('/:organizationId/members/invite', organizationController.inviteUser);
+router.post('/:organizationId/members/invite', checkInvitationLimit, organizationController.inviteUser);
 
 // Update user role in organization
 router.put('/:organizationId/members/:userId/role', organizationController.updateUserRole);
@@ -44,8 +45,8 @@ router.delete('/:organizationId/members/:userId', organizationController.removeU
 // INVITATION ROUTES (NEW - Invite-only system)
 // =====================================================
 
-// Create invitation (owner only)
-router.post('/:orgId/invites', invitationController.createInvitation);
+// Create invitation (owner only) - with invitation limit check
+router.post('/:orgId/invites', checkInvitationLimit, invitationController.createInvitation);
 
 // List invitations for organization (owner/admin only)
 router.get('/:orgId/invites', invitationController.listInvitations);

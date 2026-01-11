@@ -19,11 +19,18 @@ const stripeController = {
    * CREATE CHECKOUT SESSION
    * =====================================================
    * POST /api/stripe/create-checkout-session
-   * Body: { priceId?, successUrl, cancelUrl }
+   * Body: { plan?, billingCycle?, skipTrial?, priceId?, successUrl?, cancelUrl? }
    */
   createCheckoutSession: async (req, res) => {
     try {
-      const { priceId, successUrl, cancelUrl } = req.body;
+      const { 
+        plan, 
+        billingCycle, 
+        skipTrial, 
+        priceId, 
+        successUrl, 
+        cancelUrl 
+      } = req.body;
       const userId = req.user.id;
       const organizationId = req.user.current_organization_id || req.organization?.id;
 
@@ -32,26 +39,37 @@ const stripeController = {
         return responseUtil.error(res, 'No organization context found', 400);
       }
 
-      if (!successUrl || !cancelUrl) {
-        return responseUtil.error(res, 'Success URL and Cancel URL are required', 400);
-      }
-
       // Check if organization already has active subscription
       const subscriptionInfo = await subscriptionService.getSubscriptionInfo(organizationId);
       if (subscriptionInfo && ['active', 'trialing'].includes(subscriptionInfo.subscription_status)) {
         return responseUtil.error(res, 'Organization already has an active subscription', 400);
       }
 
-      // Create checkout session
+      // Determine price ID based on plan and billing cycle
+      let finalPriceId = priceId;
+      if (plan && billingCycle) {
+        const pricingConfig = getPricingConfig();
+        
+        if (plan === 'starter' || plan === 'pro') {
+          // Use the prices from STRIPE_CONFIG, not from plan object
+          const { STRIPE_CONFIG } = require('../config/stripe.config');
+          finalPriceId = billingCycle === 'monthly' 
+            ? STRIPE_CONFIG.prices.starter_monthly
+            : STRIPE_CONFIG.prices.starter_yearly;
+        }
+      }
+
+      // Create checkout session with trial settings
       const session = await stripeService.createCheckoutSession(
         organizationId,
         userId,
-        priceId,
-        successUrl,
-        cancelUrl
+        finalPriceId,
+        successUrl || `${process.env.FRONTEND_URL}/admin?checkout=success`,
+        cancelUrl || `${process.env.FRONTEND_URL}/pricing?checkout=cancelled`,
+        skipTrial === true ? false : true // Enable trial unless explicitly skipped
       );
 
-      console.log(`✅ Checkout session created for org ${organizationId}: ${session.id}`);
+      console.log(`✅ Checkout session created for org ${organizationId}: ${session.id} (plan: ${plan}, cycle: ${billingCycle}, trial: ${!skipTrial})`);
 
       return responseUtil.success(res, 'Checkout session created', {
         sessionId: session.id,

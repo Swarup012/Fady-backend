@@ -98,23 +98,33 @@ class BoardService {
    * Get single board by slug - ORGANIZATION-SCOPED VERSION with ROLE CHECK
    * Users can access boards in their organization if their role matches
    */
-  async getBoardBySlug(slug, userId, userRole) {
+  async getBoardBySlug(slug, userId, userRole, organizationId = null) {
     try {
-      // Get user's current organization and role
+      // Get user's current organization (no role column in users table)
       const { data: user } = await supabaseAdmin
         .from('users')
-        .select('current_organization_id, role')
+        .select('current_organization_id')
         .eq('id', userId)
         .single();
 
-      const { data, error } = await supabaseAdmin
+      // Use provided organizationId, fallback to user's current org
+      const effectiveOrgId = organizationId || user?.current_organization_id;
+
+      let query = supabaseAdmin
         .from("boards")
         .select("*")
-        .eq("slug", slug)
-        .single();
+        .eq("slug", slug);
+
+      // Filter by organization if we have one
+      if (effectiveOrgId) {
+        query = query.eq("organization_id", effectiveOrgId);
+      }
+
+      const { data, error } = await query.single();
 
       if (error) {
         if (error.code === "PGRST116") {
+          console.error(`❌ Board not found - slug: ${slug}, organization_id: ${effectiveOrgId}`);
           throw new Error("Board not found");
         }
         throw error;
@@ -123,9 +133,11 @@ class BoardService {
       // Check access (multiple conditions):
       // 1. If board is public, anyone can view
       if (!data.is_private) {
-        // Still check role visibility for public boards
-        if (data.visible_to_roles && data.visible_to_roles.length > 0 && user.role) {
-          if (!data.visible_to_roles.includes(user.role)) {
+        // Still check role visibility for public boards using userRole parameter
+        if (data.visible_to_roles && data.visible_to_roles.length > 0 && userRole) {
+          console.log(`🔍 Role visibility check - Board: ${data.name}, visible_to_roles: ${JSON.stringify(data.visible_to_roles)}, user role: ${userRole}`);
+          if (!data.visible_to_roles.includes(userRole)) {
+            console.error(`❌ Role mismatch - Board requires one of: ${data.visible_to_roles.join(', ')}, but user has: ${userRole}`);
             throw new Error("This board is not visible to your role");
           }
         }
@@ -135,9 +147,11 @@ class BoardService {
 
       // 2. If user is in same organization as board
       if (user && user.current_organization_id && data.organization_id === user.current_organization_id) {
-        // Check role visibility
-        if (data.visible_to_roles && data.visible_to_roles.length > 0 && user.role) {
-          if (!data.visible_to_roles.includes(user.role)) {
+        // Check role visibility using userRole parameter
+        if (data.visible_to_roles && data.visible_to_roles.length > 0 && userRole) {
+          console.log(`🔍 Role visibility check - Board: ${data.name}, visible_to_roles: ${JSON.stringify(data.visible_to_roles)}, user role: ${userRole}`);
+          if (!data.visible_to_roles.includes(userRole)) {
+            console.error(`❌ Role mismatch - Board requires one of: ${data.visible_to_roles.join(', ')}, but user has: ${userRole}`);
             throw new Error("This board is not visible to your role");
           }
         }

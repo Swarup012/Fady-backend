@@ -6,7 +6,7 @@ const roadmapController = {
   // GET /api/roadmap/all (Admin/Owner - All boards)
   getAllRoadmapItems: async (req, res) => {
     try {
-      const { status, category, isPublic, boardSlug } = req.query;
+      const { status, category, isPublic, boardSlug, postId } = req.query;
       const organizationId = req.user?.current_organization_id;
 
       if (!organizationId) {
@@ -18,6 +18,7 @@ const roadmapController = {
       if (category) filters.category = category;
       if (isPublic !== undefined) filters.isPublic = isPublic === 'true';
       if (boardSlug) filters.boardSlug = boardSlug;
+      if (postId) filters.postId = postId;
 
       const result = await roadmapService.getAllRoadmapItems(organizationId, filters);
       return responseUtil.success(res, 'All roadmap items retrieved successfully', result);
@@ -292,6 +293,170 @@ const roadmapController = {
       return responseUtil.success(res, 'Roadmap statistics retrieved successfully', stats);
     } catch (error) {
       console.error('Error fetching roadmap stats:', error);
+      return responseUtil.error(res, error.message, 500);
+    }
+  },
+
+  // =====================================================
+  // MULTI-ROADMAP MANAGEMENT ENDPOINTS
+  // =====================================================
+
+  // GET /api/roadmaps (Get all roadmaps for organization)
+  getRoadmaps: async (req, res) => {
+    try {
+      const organizationId = req.user?.current_organization_id;
+
+      if (!organizationId) {
+        return responseUtil.error(res, 'Organization not found', 400);
+      }
+
+      const roadmaps = await roadmapService.getRoadmaps(organizationId);
+      return responseUtil.success(res, 'Roadmaps retrieved successfully', { roadmaps });
+    } catch (error) {
+      console.error('Error fetching roadmaps:', error);
+      return responseUtil.error(res, error.message, 500);
+    }
+  },
+
+  // POST /api/roadmaps (Create new roadmap)
+  createRoadmap: async (req, res) => {
+    try {
+      const { name, description } = req.body;
+      const organizationId = req.user?.current_organization_id;
+      const userId = req.user?.id;
+
+      console.log('🔍 createRoadmap - Request data:', {
+        name,
+        description,
+        organizationId,
+        userId,
+        userObject: req.user
+      });
+
+      if (!organizationId) {
+        console.error('❌ No organization ID found in request');
+        return responseUtil.error(res, 'Organization not found', 400);
+      }
+
+      if (!name || name.trim().length === 0) {
+        return responseUtil.error(res, 'Roadmap name is required', 400);
+      }
+
+      const roadmap = await roadmapService.createRoadmap({
+        organizationId,
+        userId,
+        name: name.trim(),
+        description: description?.trim() || null
+      });
+
+      return responseUtil.success(res, 'Roadmap created successfully', { roadmap }, 201);
+    } catch (error) {
+      console.error('Error creating roadmap:', error);
+      return responseUtil.error(res, error.message, 500);
+    }
+  },
+
+  // PUT /api/roadmaps/:roadmapId (Update roadmap)
+  updateRoadmap: async (req, res) => {
+    try {
+      const { roadmapId } = req.params;
+      const { name, description, is_default } = req.body;
+      const organizationId = req.user?.current_organization_id;
+      const userId = req.user?.id;
+
+      if (!organizationId) {
+        return responseUtil.error(res, 'Organization not found', 400);
+      }
+
+      const roadmap = await roadmapService.updateRoadmap({
+        roadmapId,
+        organizationId,
+        userId,
+        name,
+        description,
+        is_default
+      });
+
+      return responseUtil.success(res, 'Roadmap updated successfully', { roadmap });
+    } catch (error) {
+      console.error('Error updating roadmap:', error);
+      return responseUtil.error(res, error.message, 500);
+    }
+  },
+
+  // DELETE /api/roadmaps/:roadmapId (Archive roadmap)
+  deleteRoadmap: async (req, res) => {
+    try {
+      const { roadmapId } = req.params;
+      const organizationId = req.user?.current_organization_id;
+      const userId = req.user?.id;
+
+      if (!organizationId) {
+        return responseUtil.error(res, 'Organization not found', 400);
+      }
+
+      await roadmapService.deleteRoadmap({
+        roadmapId,
+        organizationId,
+        userId
+      });
+
+      return responseUtil.success(res, 'Roadmap archived successfully');
+    } catch (error) {
+      console.error('Error deleting roadmap:', error);
+      return responseUtil.error(res, error.message, 500);
+    }
+  },
+
+  // POST /api/posts/:postId/roadmap/:roadmapId (Add post to roadmap)
+  addPostToRoadmap: async (req, res) => {
+    try {
+      const { postId, roadmapId } = req.params;
+      const { eta, notes } = req.body;
+      const organizationId = req.user?.current_organization_id;
+      const userId = req.user?.id;
+
+      if (!organizationId) {
+        return responseUtil.error(res, 'Organization not found', 400);
+      }
+
+      const item = await roadmapService.addPostToRoadmap({
+        postId,
+        roadmapId,
+        organizationId,
+        userId,
+        eta,
+        notes
+      });
+
+      return responseUtil.success(res, 'Post added to roadmap successfully', { item }, 201);
+    } catch (error) {
+      console.error('Error adding post to roadmap:', error);
+      return responseUtil.error(res, error.message, 500);
+    }
+  },
+
+  // DELETE /api/posts/:postId/roadmap/:roadmapId (Remove post from roadmap)
+  removePostFromRoadmap: async (req, res) => {
+    try {
+      const { postId, roadmapId } = req.params;
+      const organizationId = req.user?.current_organization_id;
+      const userId = req.user?.id;
+
+      if (!organizationId) {
+        return responseUtil.error(res, 'Organization not found', 400);
+      }
+
+      await roadmapService.removePostFromRoadmap({
+        postId,
+        roadmapId,
+        organizationId,
+        userId
+      });
+
+      return responseUtil.success(res, 'Post removed from roadmap successfully');
+    } catch (error) {
+      console.error('Error removing post from roadmap:', error);
       return responseUtil.error(res, error.message, 500);
     }
   }

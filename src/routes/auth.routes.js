@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
+const { rateLimitLogin } = require('../middleware/rate-limit.middleware');
 const validate = require('../middleware/validate.middleware');
 const validationRules = require('../utils/validation.util');
 const upload = require('../middleware/upload.middleware');
@@ -16,6 +17,7 @@ router.post(
 
 router.post(
   '/login',
+  rateLimitLogin, // 🚦 Rate limit (10 attempts per 15 minutes per IP)
   validationRules.login,
   validate,
   authController.login

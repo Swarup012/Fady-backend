@@ -1,4 +1,5 @@
 const postService = require("../services/post.service");
+const notificationService = require("../services/notification.service");
 const { validationResult } = require("express-validator");
 const ResponseUtil = require("../utils/response.util");
 
@@ -52,7 +53,12 @@ class PostController {
         sortOrder: req.query.sortOrder,
       };
 
-      const posts = await postService.getPostsByBoard(slug, filters);
+      // Get organization ID from req.organization (set by injectOrganization middleware)
+      const organizationId = req.organization?.id || req.user?.current_organization_id;
+
+      console.log(`🔍 Fetching posts for board: ${slug}, organization: ${organizationId}`);
+
+      const posts = await postService.getPostsByBoard(slug, filters, organizationId);
 
       return ResponseUtil.success(res, "Posts retrieved successfully", {
         posts,
@@ -144,12 +150,32 @@ class PostController {
       const { id } = req.params;
       const updates = req.body;
 
+      // Get old post for status comparison
+      const oldPost = await postService.getPostById(id);
+      const oldStatus = oldPost?.status;
+
       const post = await postService.updatePost(
         id,
         updates,
         req.user.id,
         req.user.organization_role,
       );
+
+      // 🔄 SYNC STATUS TO ROADMAP ITEMS (if status changed)
+      if (updates.status && updates.status !== oldStatus) {
+        console.log(`🔄 Post ${id} status changed: ${oldStatus} → ${updates.status}`);
+        postService.syncPostStatusToRoadmaps(id, updates.status)
+          .then(() => console.log('✅ Roadmap items synced'))
+          .catch(err => console.error('❌ Failed to sync roadmap items:', err));
+      }
+
+      // Check if status changed to 'completed' and queue notification
+      if (updates.status && oldStatus !== 'completed' && updates.status === 'completed') {
+        console.log(`🔔 Post ${id} marked as completed, queuing notification...`);
+        notificationService.queueNotification(id, oldStatus, 'completed')
+          .then(() => console.log('✅ Notification queued successfully'))
+          .catch(err => console.error('❌ Failed to queue notification:', err));
+      }
 
       return ResponseUtil.success(res, "Post updated successfully", { post });
     } catch (error) {
@@ -177,12 +203,32 @@ class PostController {
         return ResponseUtil.error(res, "Status is required", 400);
       }
 
+      // Get old post for status comparison
+      const oldPost = await postService.getPostById(id);
+      const oldStatus = oldPost?.status;
+
       const post = await postService.updatePostStatus(
         id,
         status,
         req.user.id,
         note,
       );
+
+      // 🔄 SYNC STATUS TO ROADMAP ITEMS
+      if (status !== oldStatus) {
+        console.log(`🔄 Post ${id} status changed: ${oldStatus} → ${status}`);
+        postService.syncPostStatusToRoadmaps(id, status)
+          .then(() => console.log('✅ Roadmap items synced'))
+          .catch(err => console.error('❌ Failed to sync roadmap items:', err));
+      }
+
+      // Check if status changed to 'completed' and queue notification
+      if (oldStatus !== 'completed' && status === 'completed') {
+        console.log(`🔔 Post ${id} status changed to completed, queuing notification...`);
+        notificationService.queueNotification(id, oldStatus, 'completed')
+          .then(() => console.log('✅ Notification queued successfully'))
+          .catch(err => console.error('❌ Failed to queue notification:', err));
+      }
 
       return ResponseUtil.success(res, "Status updated successfully", { post });
     } catch (error) {
@@ -223,6 +269,7 @@ class PostController {
    */
   async toggleUpvote(req, res, next) {
     try {
+      console.log('🎯 toggleUpvote controller called for user:', req.user?.email);
       const { id } = req.params;
       const result = await postService.toggleUpvote(id, req.user.id);
 
@@ -328,6 +375,46 @@ class PostController {
         return ResponseUtil.error(res, "Access denied", 403);
       }
       console.error("Delete comment controller error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Get public roadmap posts (posts with roadmap statuses from public boards)
+   * GET /api/public/roadmap
+   */
+  async getPublicRoadmapPosts(req, res, next) {
+    try {
+      // Get subdomain from request (multiple sources)
+      const subdomain = req.headers['x-subdomain'] || 
+                        req.headers['x-organization-subdomain'] || 
+                        req.subdomain ||
+                        req.organization?.subdomain;
+      
+      if (!subdomain) {
+        console.error('❌ No subdomain found in request:', {
+          headers: req.headers,
+          subdomain: req.subdomain,
+          organization: req.organization
+        });
+        return ResponseUtil.error(res, "Organization subdomain not found", 400);
+      }
+
+      console.log('📍 Getting public roadmap posts for subdomain:', subdomain);
+
+      const filters = {
+        status: req.query.status, // Can filter by specific statuses
+        category: req.query.category,
+      };
+
+      const posts = await postService.getPublicRoadmapPosts(subdomain, filters);
+
+      return ResponseUtil.success(res, "Public roadmap posts retrieved successfully", {
+        posts,
+        count: posts.length,
+      });
+    } catch (error) {
+      console.error("Get public roadmap posts controller error:", error);
       next(error);
     }
   }

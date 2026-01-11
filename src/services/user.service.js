@@ -132,15 +132,45 @@ const userService = {
           ownerId: userId
         });
 
-        organization = await organizationService.createOrganization({
-          name: companyName,
-          subdomain: onboardingData.subdomain, // Optional: user can customize
-          description: onboardingData.description,
-          industry: onboardingData.industry,
-          company_size: onboardingData.companySize,
-          website: onboardingData.companyWebsite,
-          ownerId: userId,
-        });
+        // Try to create organization with provided or generated subdomain
+        try {
+          organization = await organizationService.createOrganization({
+            name: companyName,
+            subdomain: onboardingData.subdomain, // Optional: user can customize
+            description: onboardingData.description,
+            industry: onboardingData.industry,
+            company_size: onboardingData.companySize,
+            website: onboardingData.companyWebsite,
+            ownerId: userId,
+          });
+        } catch (subdomainError) {
+          // If subdomain is taken, try with a random suffix
+          if (subdomainError.message.includes('already taken') || subdomainError.message.includes('duplicate key')) {
+            console.log('⚠️ Subdomain taken, generating unique subdomain...');
+            const baseSubdomain = onboardingData.subdomain || companyName
+              .toLowerCase()
+              .replace(/\s+/g, '-')
+              .replace(/[^a-z0-9-]/g, '')
+              .substring(0, 50); // Leave room for suffix
+            
+            const randomSuffix = Math.random().toString(36).substring(2, 8);
+            const uniqueSubdomain = `${baseSubdomain}-${randomSuffix}`;
+            
+            console.log(`🔄 Retrying with unique subdomain: ${uniqueSubdomain}`);
+            
+            organization = await organizationService.createOrganization({
+              name: companyName,
+              subdomain: uniqueSubdomain,
+              description: onboardingData.description,
+              industry: onboardingData.industry,
+              company_size: onboardingData.companySize,
+              website: onboardingData.companyWebsite,
+              ownerId: userId,
+            });
+          } else {
+            throw subdomainError;
+          }
+        }
         
         console.log(`✅ Organization created successfully:`, {
           id: organization.id,

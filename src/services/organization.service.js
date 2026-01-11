@@ -90,6 +90,7 @@ const organizationService = {
           plan: 'free',
           max_users: 10,
           max_boards: 5,
+          tracked_users_limit: 20, // Free plan limit
         })
         .select()
         .single();
@@ -352,6 +353,7 @@ const organizationService = {
           plan: 'free',
           max_users: 10,
           max_boards: 5,
+          tracked_users_limit: 20, // Free plan limit
         })
         .select()
         .single();

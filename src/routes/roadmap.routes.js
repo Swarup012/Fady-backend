@@ -2,6 +2,7 @@
 const express = require('express');
 const roadmapController = require('../controllers/roadmap.controller');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
+const { checkRoadmapLimit } = require('../middleware/plan-limits.middleware');
 
 const router = express.Router();
 
@@ -45,6 +46,58 @@ router.get(
   authorize(['admin', 'owner']),
   roadmapController.getAllRoadmapItems
 );
+
+// ============================================
+// MULTI-ROADMAP MANAGEMENT ROUTES
+// ============================================
+
+// Get all roadmaps for organization
+router.get(
+  '/roadmaps',
+  authenticate,
+  roadmapController.getRoadmaps
+);
+
+// Create new roadmap (with plan limit check)
+router.post(
+  '/roadmaps',
+  authenticate,
+  authorize(['admin', 'owner']),
+  checkRoadmapLimit,
+  roadmapController.createRoadmap
+);
+
+// Update roadmap
+router.put(
+  '/roadmaps/:roadmapId',
+  authenticate,
+  authorize(['admin', 'owner']),
+  roadmapController.updateRoadmap
+);
+
+// Delete (archive) roadmap
+router.delete(
+  '/roadmaps/:roadmapId',
+  authenticate,
+  authorize(['admin', 'owner']),
+  roadmapController.deleteRoadmap
+);
+
+// Add post to roadmap
+router.post(
+  '/posts/:postId/roadmap/:roadmapId',
+  authenticate,
+  roadmapController.addPostToRoadmap
+);
+
+// Remove post from roadmap
+router.delete(
+  '/posts/:postId/roadmap/:roadmapId',
+  authenticate,
+  roadmapController.removePostFromRoadmap
+);
+
+// ============================================
 
 // Get single roadmap item
 router.get(
@@ -97,11 +150,12 @@ router.delete(
 // ADMIN & OWNER ROUTES
 // ============================================
 
-// Create roadmap item (Admin & Owner)
+// Create roadmap item (Admin & Owner) - with roadmap limit check
 router.post(
   '/boards/:boardSlug/roadmap',
   authenticate,
   authorize(['admin', 'owner']),
+  checkRoadmapLimit,
   roadmapController.createRoadmapItem
 );
 

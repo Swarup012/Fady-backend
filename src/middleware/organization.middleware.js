@@ -37,6 +37,33 @@ const injectOrganization = async (req, res, next) => {
         return next(); // Continue without org context instead of failing
       }
 
+      // ✅ SKIP MEMBERSHIP CHECK FOR PUBLIC ROUTES AND POST CREATION
+      // If this is a public route (path starts with /api/public), don't check membership
+      // Also skip for POST requests to create posts/comments/votes (let controller handle permissions)
+      console.log(`🔍 Checking if public route: req.path = ${req.path}, req.url = ${req.url}, req.originalUrl = ${req.originalUrl}, method = ${req.method}`);
+      
+      const isPublicRoute = req.originalUrl && req.originalUrl.startsWith('/api/public');
+      const postCreationMatch = req.originalUrl && req.originalUrl.match(/\/api\/boards\/[^/]+\/posts$/);
+      const commentCreationMatch = req.originalUrl && req.originalUrl.match(/\/api\/posts\/[^/]+\/comments$/);
+      const voteMatch = req.originalUrl && req.originalUrl.match(/\/api\/posts\/[^/]+\/vote$/);
+      
+      const isPostCreation = req.method === 'POST' && (postCreationMatch || commentCreationMatch || voteMatch);
+      
+      console.log(`🔍 Regex matches:`, {
+        isPublicRoute,
+        postCreationMatch: !!postCreationMatch,
+        commentCreationMatch: !!commentCreationMatch,
+        voteMatch: !!voteMatch,
+        isPostCreation,
+        method: req.method
+      });
+      
+      if (isPublicRoute || isPostCreation) {
+        console.log(`✅ ${isPublicRoute ? 'Public route' : 'Post/comment/vote creation'} - skipping membership check for ${req.user?.email || 'guest'}`);
+        req.organization = organization;
+        return next();
+      }
+
       // If user is authenticated, verify they belong to this organization
       if (req.user) {
         const { data: membership, error: memberError } = await supabaseAdmin

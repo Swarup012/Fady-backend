@@ -12,6 +12,7 @@ const uploadRoutes = require("./routes/upload.routes");
 const userRoutes = require("./routes/user.routes");
 const organizationRoutes = require("./routes/organization.routes");
 const invitationRoutes = require("./routes/invitation.routes");
+const notificationRoutes = require("./routes/notification.routes");
 const { authenticate } = require("./middleware/auth.middleware");
 const { injectOrganization } = require("./middleware/organization.middleware");
 
@@ -62,6 +63,17 @@ app.post("/api/stripe/webhook", express.raw({ type: 'application/json' }), handl
 // NOW we can parse JSON for all other routes (including other Stripe routes)
 app.use(express.json());
 
+// 🔍 REQUEST LOGGING (temporary for debugging) - MOVED HERE after json parsing
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.path.includes('/upvote')) {
+    console.log(`🔍 ==== UPVOTE REQUEST ====`);
+    console.log(`🔍 Method: ${req.method}`);
+    console.log(`🔍 Path: ${req.path}`);
+    console.log(`🔍 Headers:`, req.headers);
+  }
+  next();
+});
+
 // Don't use express.urlencoded for routes that use multer
 app.use((req, res, next) => {
   // Skip urlencoded parsing for avatar upload route (uses multer)
@@ -107,8 +119,8 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ✅ PUBLIC ROUTES (NO AUTHENTICATION)
-app.use("/api/public", publicRoutes); // ← ADD THIS BEFORE AUTH ROUTES
+// ✅ PUBLIC ROUTES (NO AUTHENTICATION, but with organization context)
+app.use("/api/public", injectOrganization, publicRoutes); // ← Organization middleware for subdomain context
 app.use("/api", roadMapRoutes); // ← Roadmap routes handle their own auth (public routes first)
 
 // API Routes (require authentication)
@@ -117,9 +129,20 @@ app.use("/api/auth", authRoutes);
 // ✅ INVITATION ROUTES (public verify, protected accept)
 app.use("/api/invitations", invitationRoutes);
 
+// ✅ NOTIFICATION ROUTES (preferences, unsubscribe, history)
+app.use("/api/notifications", notificationRoutes);
+
 // ✅ STRIPE ROUTES (webhook already registered above with raw body)
 const stripeRoutes = require("./routes/stripe.routes");
 app.use("/api/stripe", stripeRoutes);
+
+// ✅ TRACKED USERS ROUTES (usage monitoring)
+const trackedUsersRoutes = require("./routes/tracked-users.routes");
+app.use("/api/tracked-users", authenticate, injectOrganization, trackedUsersRoutes);
+
+// ✅ ADMIN ROUTES (manual reset, status checks)
+const adminRoutes = require("./routes/admin.routes");
+app.use("/api/admin", authenticate, injectOrganization, adminRoutes);
 
 // ✅ AUTHENTICATED ROUTES WITH ORGANIZATION CONTEXT
 // Organization middleware is added to validate subdomain access

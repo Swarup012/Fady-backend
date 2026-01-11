@@ -42,9 +42,17 @@ class BoardController {
     try {
       const { slug } = req.params;
       const userId = req.user.id;
-      const jobRole = req.user.job_role; // Use job_role instead of role
+      
+      // Use organization_role from middleware (owner/admin/member), not job_role (founder/manager/etc)
+      // visible_to_roles on boards expects organization roles
+      const orgRole = req.organizationRole || req.user?.organization_role || 'member';
+      
+      // Get organization ID from req.organization (set by injectOrganization middleware)
+      const organizationId = req.organization?.id || req.user?.current_organization_id;
 
-      const board = await boardService.getBoardBySlug(slug, userId, jobRole);
+      console.log(`🔍 Fetching board: ${slug}, organization: ${organizationId}, org_role: ${orgRole}`);
+
+      const board = await boardService.getBoardBySlug(slug, userId, orgRole, organizationId);
 
       return ResponseUtil.success(res, "Board retrieved successfully", {
         board,

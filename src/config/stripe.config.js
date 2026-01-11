@@ -30,8 +30,14 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 const STRIPE_CONFIG = {
   // Pricing IDs (create these in Stripe Dashboard)
   prices: {
-    monthly: process.env.STRIPE_PRICE_MONTHLY || 'price_xxx', // Replace with actual price ID
-    yearly: process.env.STRIPE_PRICE_YEARLY || 'price_yyy',   // Optional: yearly plan
+    // New Starter plan price IDs
+    starter_monthly: process.env.STRIPE_PRICE_STARTER_MONTHLY || process.env.STRIPE_PRICE_MONTHLY || 'price_xxx', // $19/month
+    starter_yearly: process.env.STRIPE_PRICE_STARTER_YEARLY || process.env.STRIPE_PRICE_YEARLY || 'price_yyy',   // $180/year
+    overage_metered: process.env.STRIPE_PRICE_OVERAGE || 'price_zzz',         // $6 per 50 users (metered)
+    
+    // Legacy price IDs (for backward compatibility)
+    monthly: process.env.STRIPE_PRICE_MONTHLY || 'price_xxx',
+    yearly: process.env.STRIPE_PRICE_YEARLY || 'price_yyy',
   },
 
   // Plan configurations
@@ -40,26 +46,72 @@ const STRIPE_CONFIG = {
       name: 'Free',
       price: 0,
       features: {
-        boards: 1,
-        posts_per_month: 50,
-        team_members: 3,
+        boards: 3,
+        posts_per_board: 5, // 5 posts per board
+        posts_per_month: 50, // Total for backward compatibility
+        team_members: 3, // 3 team members total (including owner)
+        tracked_users: 20, // 20 tracked users (voters/commenters) - HARD LIMIT
+        roadmap_items: 1, // 1 roadmap
         custom_branding: false,
         priority_support: false,
         advanced_analytics: false,
+        overage_allowed: false,
       },
     },
-    pro: {
-      name: 'Pro',
-      price: 2900, // $29.00 (in cents)
+    starter: {
+      name: 'Starter',
+      price: 1900, // $19.00/month (in cents)
+      yearlyPrice: 18000, // $180.00/year (in cents) - saves $48/year
+      effectiveMonthlyYearly: 1500, // $15.00/month when billed yearly
       currency: 'usd',
       interval: 'month',
       features: {
         boards: -1, // Unlimited
+        posts_per_board: -1, // Unlimited
         posts_per_month: -1, // Unlimited
-        team_members: -1, // Unlimited
+        team_members: 5, // 5 team members
+        tracked_users: 125, // 125 tracked users included
+        roadmap_items: 1, // 1 roadmap
         custom_branding: true,
-        priority_support: true,
+        priority_support: false, // Optional: can add for annual plans
         advanced_analytics: true,
+        overage_allowed: true,
+      },
+      // Overage billing configuration
+      overage: {
+        grace_buffer: 25, // 20% buffer (don't charge until 150 users)
+        effective_limit: 150, // 125 base + 25 grace
+        price_per_block: 6.00, // $6 per block
+        block_size: 50, // 50 users per block
+        billing_frequency: 'monthly', // Charge overage monthly for both monthly and annual
+      },
+    },
+    // Keep 'pro' as alias for backward compatibility during migration
+    pro: {
+      name: 'Starter', // Maps to Starter
+      price: 1900,
+      yearlyPrice: 18000,
+      effectiveMonthlyYearly: 1500,
+      currency: 'usd',
+      interval: 'month',
+      features: {
+        boards: -1,
+        posts_per_board: -1,
+        posts_per_month: -1,
+        team_members: 5, // 5 team members
+        tracked_users: 125,
+        roadmap_items: 1, // 1 roadmap
+        custom_branding: true,
+        priority_support: false,
+        advanced_analytics: true,
+        overage_allowed: true,
+      },
+      overage: {
+        grace_buffer: 25,
+        effective_limit: 150,
+        price_per_block: 6.00,
+        block_size: 50,
+        billing_frequency: 'monthly',
       },
     },
   },
@@ -68,6 +120,8 @@ const STRIPE_CONFIG = {
   trial: {
     enabled: true,
     days: 14, // 14-day trial
+    skip_allowed: true, // Allow users to skip trial and pay immediately
+    overage_during_trial: false, // No overage charges during trial
   },
 
   // Webhook events we handle
