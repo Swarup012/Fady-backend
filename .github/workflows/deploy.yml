@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - master
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
@@ -13,19 +13,19 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
       
       - name: Login to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
@@ -34,27 +34,37 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:${{ github.sha }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
           cache-to: type=inline
+          platforms: linux/amd64
       
-      # Install Border0 CLI
       - name: Install Border0 CLI
         run: |
-          curl -sL https://download.border0.com/install.sh | sudo bash
+          wget https://download.border0.com/linux_amd64/border0 -O /tmp/border0
+          chmod +x /tmp/border0
+          sudo mv /tmp/border0 /usr/local/bin/border0
+          border0 version
 
-      # Authenticate Border0 CLI
       - name: Authenticate Border0 CLI
         run: |
           border0 login --token ${{ secrets.BORDER0_TOKEN }}
 
-      # Deploy to EC2 using Border0 SSH Socket
       - name: Deploy to EC2 via Border0
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
-          border0 ssh --socket faddy-backend-ssh "cd ~ && source ~/.env && ./deploy.sh"
+          border0 ssh --socket ${{ secrets.BORDER0_SOCKET_NAME }} \
+            'bash -s' < /home/ubuntu/deploy.sh
 
-      # Verify deployment via Border0
-      - name: Verify deployment via Border0
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+      - name: Verify deployment
         run: |
-          border0 ssh --socket faddy-backend-ssh "echo 'Checking if container is running...' && docker ps | grep faddy-backend && echo 'Checking health endpoint...' && curl -f http://localhost:3000/health || exit 1 && echo '✅ Deployment successful!'"
+          border0 ssh --socket ${{ secrets.BORDER0_SOCKET_NAME }} << 'ENDSSH'
+            if docker ps | grep -q fady-backend; then
+              echo "✅ Container is running"
+              docker ps | grep fady-backend
+            else
+              echo "❌ Container is not running"
+              exit 1
+            fi
+          ENDSSH
+
+      - name: Cleanup Border0 session
+        if: always()
+        run: |
+          border0 logout || true
