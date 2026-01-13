@@ -50,13 +50,15 @@ jobs:
         run: |
           border0 whoami
 
-      - name: Border0 SSH sanity test (NON-INTERACTIVE)
+      - name: Border0 SSH sanity test
         run: |
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- -T whoami
+          border0 whoami
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- whoami
 
-      - name: Deploy to EC2 via Border0 (NON-INTERACTIVE)
+      - name: Deploy
         run: |
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- -T bash /home/ubuntu/deploy.sh
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- bash /home/ubuntu/deploy.sh
+
 
       - name: Verify deployment
         run: |
