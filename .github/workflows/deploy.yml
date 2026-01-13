@@ -52,11 +52,11 @@ jobs:
 
       - name: Border0 SSH sanity test (NON-INTERACTIVE)
         run: |
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- whoami
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- -T whoami
 
       - name: Deploy to EC2 via Border0 (NON-INTERACTIVE)
         run: |
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- bash /home/ubuntu/deploy.sh
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- -T bash /home/ubuntu/deploy.sh
 
       - name: Verify deployment
         run: |
