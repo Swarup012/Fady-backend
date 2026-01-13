@@ -51,12 +51,13 @@ jobs:
           border0 socket ls
 
       - name: Deploy to EC2 via Border0
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
+          
+          border0 login --token ${{ secrets.BORDER0_TOKEN }}
+          
+        
           border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} \
-            --headless \
-            --command "bash /home/ubuntu/deploy.sh"
+            'bash /home/ubuntu/deploy.sh'
 
       - name: Verify deployment
         run: |
