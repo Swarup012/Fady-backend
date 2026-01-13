@@ -43,28 +43,50 @@ jobs:
           sudo mv /tmp/border0 /usr/local/bin/border0
           border0 version
 
+      # Method 1: Login with token via stdin
       - name: Authenticate Border0 CLI
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
-          border0 login --token ${{ secrets.BORDER0_TOKEN }}
+          echo "$BORDER0_TOKEN" | border0 login
 
+      # Deploy to EC2
       - name: Deploy to EC2 via Border0
         run: |
-          border0 ssh --socket ${{ secrets.BORDER0_SOCKET_NAME }} \
-            'bash -s' < /home/ubuntu/deploy.sh
+          border0 ssh ${{ secrets.BORDER0_SOCKET_NAME }} << 'ENDSSH'
+            set -e
+            cd /home/ubuntu
+            bash deploy.sh
+          ENDSSH
 
+      # Verify deployment
       - name: Verify deployment
         run: |
-          border0 ssh --socket ${{ secrets.BORDER0_SOCKET_NAME }} << 'ENDSSH'
-            if docker ps | grep -q fady-backend; then
-              echo "✅ Container is running"
-              docker ps | grep fady-backend
-            else
+          sleep 10
+          border0 ssh ${{ secrets.BORDER0_SOCKET_NAME }} << 'ENDSSH'
+            set -e
+            
+            # Check if container is running
+            if ! docker ps | grep -q fady-backend; then
               echo "❌ Container is not running"
+              docker logs --tail 50 fady-backend
+              exit 1
+            fi
+            
+            echo "✅ Container is running"
+            docker ps | grep fady-backend
+            
+            # Check health endpoint
+            if docker exec fady-backend curl -f http://localhost:3000/health; then
+              echo "✅ Health check passed!"
+            else
+              echo "❌ Health check failed"
               exit 1
             fi
           ENDSSH
 
-      - name: Cleanup Border0 session
+      # Cleanup
+      - name: Logout from Border0
         if: always()
         run: |
           border0 logout || true
