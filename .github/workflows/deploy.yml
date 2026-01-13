@@ -50,33 +50,34 @@ jobs:
         run: |
           border0 whoami
 
-      - name: Border0 SSH sanity test
+      - name: Border0 SSH Sanity Test
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
-          # 1. Check API identity (Keep this, it's good)
+          # Step A: Confirm API Identity
           border0 whoami
-
-          # 2. Run SSH using the "Dumb Pipe" method (ProxyCommand)
-          # This forces the connection through Border0 without asking for a browser login
-          ssh \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ProxyCommand="border0 client proxy %h" \
-            ubuntu@${{ secrets.BORDER0_SOCKET_NAME }} \
-            "whoami"
+          
+          # Step B: Test the actual tunnel path
+          # We use 'border0 client proxy' because it is non-interactive.
+          # If this returns 'ubuntu', the connection path is 100% fixed.
+          ssh -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ProxyCommand="border0 client proxy --token ${{ secrets.BORDER0_TOKEN }} %h" \
+              ubuntu@ssh-ip-172-31-2-181 \
+              "whoami"
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
-          # We use standard 'ssh' instead of 'border0 client ssh'
-          # We force it to use 'border0 client proxy' just to carry the data
+          # 1. We use standard Linux SSH
+          # 2. We use 'border0 client proxy' as the tunnel (bypasses browser checks)
+          # 3. We pass the token directly into the proxy command
           
-          ssh \
+          ssh -v \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
-            -o ProxyCommand="border0 client proxy %h" \
-            ubuntu@${{ secrets.BORDER0_SOCKET_NAME }} \
+            -o ProxyCommand="border0 client proxy --token ${{ secrets.BORDER0_TOKEN }} %h" \
+            ubuntu@ssh-ip-172-31-2-181 \
             "bash /home/ubuntu/deploy.sh"
 
       - name: Verify deployment
