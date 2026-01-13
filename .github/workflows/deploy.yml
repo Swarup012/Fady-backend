@@ -35,26 +35,26 @@ jobs:
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
           cache-to: type=inline
       
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.EC2_BACKEND_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd ~
-            source ~/.env
-            ./deploy.sh
-      
-      - name: Verify deployment
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.EC2_BACKEND_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            echo "Checking if container is running..."
-            docker ps | grep faddy-backend
-            echo "Checking health endpoint..."
-            curl -f http://localhost:3000/health || exit 1
-            echo "✅ Deployment successful!"
+      # Install Border0 CLI
+      - name: Install Border0 CLI
+        run: |
+          curl -sL https://download.border0.com/install.sh | sudo bash
+
+      # Authenticate Border0 CLI
+      - name: Authenticate Border0 CLI
+        run: |
+          border0 login --token ${{ secrets.BORDER0_TOKEN }}
+
+      # Deploy to EC2 using Border0 SSH Socket
+      - name: Deploy to EC2 via Border0
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+        run: |
+          border0 ssh --socket faddy-backend-ssh "cd ~ && source ~/.env && ./deploy.sh"
+
+      # Verify deployment via Border0
+      - name: Verify deployment via Border0
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+        run: |
+          border0 ssh --socket faddy-backend-ssh "echo 'Checking if container is running...' && docker ps | grep faddy-backend && echo 'Checking health endpoint...' && curl -f http://localhost:3000/health || exit 1 && echo '✅ Deployment successful!'"
