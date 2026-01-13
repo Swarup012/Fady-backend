@@ -50,6 +50,10 @@ jobs:
         run: |
           border0 socket ls
 
+      - name: Debug Environment Variables
+        run: env | sort
+
+
       - name: Deploy to EC2 via Border0
         run: |
           # We rely on the BORDER0_TOKEN environment variable and skip any explicit login command
