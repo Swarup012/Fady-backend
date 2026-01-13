@@ -51,20 +51,23 @@ jobs:
           border0 whoami
 
       - name: Border0 SSH Sanity Test
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
-          # Step A: Confirm API Identity
-          border0 whoami
+          # 1. Create the hidden directory where Border0 stores its session
+          mkdir -p ~/.border0
           
-          # Step B: Test the actual tunnel path
-          # We use 'border0 client proxy' because it is non-interactive.
-          # If this returns 'ubuntu', the connection path is 100% fixed.
-          ssh -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ProxyCommand="border0 client proxy --token ${{ secrets.BORDER0_TOKEN }} %h" \
-              ubuntu@ssh-ip-172-31-2-181 \
-              "whoami"
+          # 2. Manually write the credentials JSON file
+          # This 'tricks' the CLI into thinking you are already logged in
+          echo '{"access_token":"${{ secrets.BORDER0_TOKEN }}"}' > ~/.border0/credentials.json
+          chmod 600 ~/.border0/credentials.json
+
+          # 3. Run the SSH command using the proxy
+          # Note: We removed the --token flag because it is now reading from the file above
+          ssh -v \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="border0 client proxy %h" \
+            ubuntu@ssh-ip-172-31-2-181 \
+            "whoami"
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
