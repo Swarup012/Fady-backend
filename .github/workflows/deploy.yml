@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     
     env:
-      BORDER0_AUTH_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+      BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
     
     steps:
       - name: Checkout code
@@ -51,9 +51,12 @@ jobs:
           border0 socket ls
 
       - name: Deploy to EC2 via Border0
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
           border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} \
-            'cd /home/ubuntu && bash deploy.sh'
+            --headless \
+            --command "bash /home/ubuntu/deploy.sh"
 
       - name: Verify deployment
         run: |
