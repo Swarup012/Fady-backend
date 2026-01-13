@@ -55,10 +55,19 @@ jobs:
           border0 whoami
           border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- whoami
 
-      - name: Deploy
+      - name: Deploy to EC2 via Border0
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- bash /home/ubuntu/deploy.sh
-
+          # We use standard 'ssh' instead of 'border0 client ssh'
+          # We force it to use 'border0 client proxy' just to carry the data
+          
+          ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="border0 client proxy %h" \
+            ubuntu@${{ secrets.BORDER0_SOCKET_NAME }} \
+            "bash /home/ubuntu/deploy.sh"
 
       - name: Verify deployment
         run: |
