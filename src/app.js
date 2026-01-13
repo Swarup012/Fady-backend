@@ -51,7 +51,7 @@ const corsOptions = {
   optionsSuccessStatus: 200,
 };
 
-// Middleware
+// Middleware here
 app.use(cors(corsOptions));
 
 // ⚠️ CRITICAL: Stripe webhook MUST come BEFORE express.json()
