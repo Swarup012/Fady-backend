@@ -52,12 +52,10 @@ jobs:
 
       - name: Deploy to EC2 via Border0
         run: |
-          
-          border0 login --token ${{ secrets.BORDER0_TOKEN }}
-          
-        
+          # No explicit login step here, rely on the environment variable
           border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} \
             'bash /home/ubuntu/deploy.sh'
+
 
       - name: Verify deployment
         run: |
