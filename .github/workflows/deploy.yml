@@ -60,6 +60,12 @@ jobs:
         run: |
           border0 socket ls
 
+      - name: Border0 SSH sanity test
+        run: |
+          border0 whoami
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} 'whoami && hostname'
+
+
       - name: Debug Environment Variables
         run: env | sort
 
