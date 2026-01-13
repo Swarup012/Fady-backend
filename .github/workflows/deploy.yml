@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     
     env:
-      BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+      BORDER0_AUTH_TOKEN: ${{ secrets.BORDER0_TOKEN }}
     
     steps:
       - name: Checkout code
