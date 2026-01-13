@@ -51,10 +51,20 @@ jobs:
           border0 whoami
 
       - name: Border0 SSH sanity test
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
         run: |
+          # 1. Check API identity (Keep this, it's good)
           border0 whoami
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- whoami
 
+          # 2. Run SSH using the "Dumb Pipe" method (ProxyCommand)
+          # This forces the connection through Border0 without asking for a browser login
+          ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="border0 client proxy %h" \
+            ubuntu@${{ secrets.BORDER0_SOCKET_NAME }} \
+            "whoami"
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
