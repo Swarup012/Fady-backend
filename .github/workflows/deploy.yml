@@ -63,8 +63,7 @@ jobs:
       - name: Border0 SSH sanity test
         run: |
           border0 whoami
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} 'whoami && hostname'
-
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} --exec -- whoami
 
       - name: Debug Environment Variables
         run: env | sort
@@ -72,9 +71,9 @@ jobs:
 
       - name: Deploy to EC2 via Border0
         run: |
-          # We rely on the BORDER0_TOKEN environment variable and skip any explicit login command
           border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} \
-            'bash /home/ubuntu/deploy.sh'
+            --exec -- \
+            bash /home/ubuntu/deploy.sh
 
 
       - name: Verify deployment
