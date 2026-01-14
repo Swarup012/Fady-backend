@@ -40,6 +40,7 @@ jobs:
 
       - name: Deploy to EC2 via Border0
         env:
+          # The CLI automatically looks for this variable name for authentication
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
           SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
@@ -50,9 +51,8 @@ jobs:
           chmod 600 ~/.ssh/backend.pem
 
           # 2. Use the direct Border0 SSH client (Headless Mode)
-          # This command handles the tunnel and authentication in one step
+          # Removed --token flag. The CLI uses the BORDER0_TOKEN env var.
           border0 client ssh $SOCKET_NAME \
-            --token $BORDER0_TOKEN \
             --identity ~/.ssh/backend.pem \
             --ssh-user ubuntu \
             -- "bash /home/ubuntu/deploy.sh"
