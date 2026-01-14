@@ -2,18 +2,12 @@ name: Deploy Backend to AWS EC2
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
-    env:
-      BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -41,47 +35,39 @@ jobs:
 
       - name: Install Border0 CLI
         run: |
-          wget https://download.border0.com/linux_amd64/border0 -O /tmp/border0
-          chmod +x /tmp/border0
-          sudo mv /tmp/border0 /usr/local/bin/border0
-          border0 version
+          curl -sL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
+          chmod +x /usr/local/bin/border0
 
-      - name: Test Border0 Authentication
+      - name: Deploy to EC2 via Border0
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+          SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
+          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
         run: |
-          border0 whoami
+          # 1. Setup the PEM key file
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
+          chmod 600 ~/.ssh/backend.pem
 
-      - name: Final Border0 Sanity Test
-        run: |
-          mkdir -p ~/.border0
-          echo '{"access_token":"${{ secrets.BORDER0_TOKEN }}"}' > ~/.border0/credentials.json
-          chmod 600 ~/.border0/credentials.json
-
-          # -T: Crucial! Disables terminal request which hangs in CI/CD
-          # -o BatchMode=yes: Prevents waiting for any human prompts
-          ssh -v -T \
+          # 2. Execute deployment command
+          # Added --token inside ProxyCommand to ensure authentication
+          ssh -i ~/.ssh/backend.pem \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o BatchMode=yes \
             -o ConnectTimeout=60 \
-            -o ProxyCommand="border0 client proxy %h" \
-            ubuntu@${{ secrets.BORDER0_SOCKET_NAME }} \
-            "whoami"
-      - name: Deploy to EC2 via Border0
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
-        run: |
-          # 1. We use standard Linux SSH
-          # 2. We use 'border0 client proxy' as the tunnel (bypasses browser checks)
-          # 3. We pass the token directly into the proxy command
-          
-          ssh -v \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ProxyCommand="border0 client proxy --token ${{ secrets.BORDER0_TOKEN }} %h" \
-            ubuntu@ssh-ip-172-31-2-181 \
+            -o ProxyCommand="border0 client proxy --token $BORDER0_TOKEN --host %h" \
+            ubuntu@$SOCKET_NAME \
             "bash /home/ubuntu/deploy.sh"
 
       - name: Verify deployment
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
         run: |
+          # Wait for container to stabilize
           sleep 10
-          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} -- docker ps | grep faddy-backend
+          # Using --token explicitly here as well
+          border0 client ssh $SOCKET_NAME \
+            --token $BORDER0_TOKEN \
+            -- "docker ps | grep faddy-backend"
