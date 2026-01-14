@@ -15,6 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # --- Docker Build and Push Stage ---
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -36,14 +37,22 @@ jobs:
           cache-to: type=inline
           platforms: linux/amd64
 
-      # This official action fixes the "HTML instead of binary" error 
-      # by handling the CLI installation safely.
-      - name: Setup Border0
+      # --- Border0 CLI Installation Stage ---
+      - name: Install Border0 CLI
+        run: |
+          # Use -fsSL to follow redirects and ensure we get the binary
+          sudo curl -fsSL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
+          sudo chmod +x /usr/local/bin/border0
+          border0 version
+
+      # --- Border0 Connection Stage ---
+      - name: Setup Border0 Connection
         uses: borderzero/gh-action@v2
         with:
           token: ${{ secrets.BORDER0_TOKEN }}
           background-mode: true
 
+      # --- Remote Deployment Stage ---
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
@@ -54,9 +63,9 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
           chmod 600 ~/.ssh/backend.pem
-
-          # 2. Execute deployment command
-          # We use the standard ssh client with Border0 as the ProxyCommand
+          
+          # 2. Execute deployment via ProxyCommand
+          # Note: No --token flag is needed if BORDER0_TOKEN is in the env
           ssh -i ~/.ssh/backend.pem \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
@@ -66,12 +75,12 @@ jobs:
             ubuntu@$SOCKET_NAME \
             "bash /home/ubuntu/deploy.sh"
 
+      # --- Verification Stage ---
       - name: Verify deployment
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
         run: |
-          # Wait 15 seconds for the container to start on the EC2
           sleep 15
-          # Use Border0 to run a remote command to check docker status
+          # Use Border0 CLI to verify the container is running
           border0 client ssh $SOCKET_NAME -- "docker ps | grep faddy-backend"
