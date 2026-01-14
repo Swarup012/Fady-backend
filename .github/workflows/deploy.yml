@@ -29,33 +29,33 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
-          cache-to: type=inline
           platforms: linux/amd64
 
       - name: Install Border0 CLI
         run: |
-          curl -sL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
+          curl -sL download.border0.com -o /usr/local/bin/border0
           chmod +x /usr/local/bin/border0
 
-      - name: Deploy to EC2
-  env:
-    BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
-    SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
-    SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
-  run: |
-    # 1. Setup key
-    mkdir -p ~/.ssh
-    echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
-    chmod 600 ~/.ssh/backend.pem
+      - name: Deploy to EC2 via Border0
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
+          SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          # 1. Setup SSH directory and key
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
+          chmod 600 ~/.ssh/backend.pem
 
-    # 2. Connect
-    ssh -i ~/.ssh/backend.pem \
-      -o StrictHostKeyChecking=no \
-      -o BatchMode=yes \
-      -o ProxyCommand="border0 client proxy $SOCKET_NAME" \
-      ubuntu@$SOCKET_NAME \
-      "bash /home/ubuntu/deploy.sh"
+          # 2. Execute deployment command via Border0 Proxy
+          ssh -i ~/.ssh/backend.pem \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o ConnectTimeout=60 \
+            -o ProxyCommand="border0 client proxy $SOCKET_NAME" \
+            ubuntu@$SOCKET_NAME \
+            "bash /home/ubuntu/deploy.sh"
 
       - name: Verify deployment
         env:
@@ -63,5 +63,5 @@ jobs:
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
         run: |
           sleep 10
-          # POSITIONAL SYNTAX: "border0 client ssh <socket_name> -- <command>"
+          # Using the Border0 CLI to check docker status
           border0 client ssh $SOCKET_NAME -- "docker ps | grep faddy-backend"
