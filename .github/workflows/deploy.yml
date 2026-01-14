@@ -48,14 +48,13 @@ jobs:
           echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
           chmod 600 ~/.ssh/backend.pem
 
-          # Standard 2026 syntax for ProxyCommand
-          # Note the usage of BORDER0_TOKEN which the CLI picks up automatically
+          # Standard 2026 headless SSH command
           ssh -i ~/.ssh/backend.pem \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o BatchMode=yes \
             -o ConnectTimeout=30 \
-            -o ProxyCommand="border0 client proxy $SOCKET_NAME" \
+            -o ProxyCommand="border0 client proxy --token $BORDER0_TOKEN $SOCKET_NAME" \
             ubuntu@$SOCKET_NAME \
             "bash /home/ubuntu/deploy.sh"
 
