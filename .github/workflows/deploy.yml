@@ -50,29 +50,23 @@ jobs:
         run: |
           border0 whoami
 
-      - name: Border0 SSH Sanity Test
+      - name: Final Sanity Test (New Socket)
         run: |
-          # 1. Prepare the Border0 session directory
-          rm -rf ~/.border0
+          # 1. Setup session
           mkdir -p ~/.border0
-          
-          # 2. Manually inject the token into the credentials file
-          # This ensures the 'proxy' command doesn't trigger a browser login
           echo '{"access_token":"${{ secrets.BORDER0_TOKEN }}"}' > ~/.border0/credentials.json
           chmod 600 ~/.border0/credentials.json
 
-          # 3. Execute the 'whoami' test
-          # -v: Detailed logs to see the handshake
-          # -o ConnectTimeout=60: Gives the tunnel time to establish in CI
-          # -o BatchMode=yes: Prevents the script from hanging on a password prompt
-          ssh -v \
+          # 2. Run the test
+          # REPLACE 'your-new-socket-name' with the actual name you gave it
+          ssh -v -T \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=60 \
             -o BatchMode=yes \
             -o ProxyCommand="border0 client proxy %h" \
-            ubuntu@ssh-ip-172-31-2-181 \
-            "whoami && echo '✅ Connection Successful' && uptime"
+            ubuntu@your-new-socket-name \
+            "whoami && echo '✅ Connection to Localhost SSH Successful'"
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
