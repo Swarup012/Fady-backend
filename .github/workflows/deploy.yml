@@ -2,12 +2,15 @@ name: Deploy Backend to AWS EC2
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,12 +32,17 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
+          cache-to: type=inline
           platforms: linux/amd64
 
-      - name: Install Border0 CLI
-        run: |
-          curl -sL download.border0.com -o /usr/local/bin/border0
-          chmod +x /usr/local/bin/border0
+      # This official action fixes the "HTML instead of binary" error 
+      # by handling the CLI installation safely.
+      - name: Setup Border0
+        uses: borderzero/gh-action@v2
+        with:
+          token: ${{ secrets.BORDER0_TOKEN }}
+          background-mode: true
 
       - name: Deploy to EC2 via Border0
         env:
@@ -42,13 +50,13 @@ jobs:
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
           SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
         run: |
-          # 1. Setup the PEM key file correctly
+          # 1. Setup the PEM key file from secrets
           mkdir -p ~/.ssh
           echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
           chmod 600 ~/.ssh/backend.pem
-      
-          # 2. Execute deployment via ProxyCommand
-          # Note: No --token flag is needed if BORDER0_TOKEN is in the env
+
+          # 2. Execute deployment command
+          # We use the standard ssh client with Border0 as the ProxyCommand
           ssh -i ~/.ssh/backend.pem \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
@@ -58,9 +66,12 @@ jobs:
             ubuntu@$SOCKET_NAME \
             "bash /home/ubuntu/deploy.sh"
 
-      - name: Install Border0 CLI
+      - name: Verify deployment
+        env:
+          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
         run: |
-          # Use -L to follow redirects and -o to specify the output path
-          sudo curl -fsSL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
-          sudo chmod +x /usr/local/bin/border0
-          border0 version
+          # Wait 15 seconds for the container to start on the EC2
+          sleep 15
+          # Use Border0 to run a remote command to check docker status
+          border0 client ssh $SOCKET_NAME -- "docker ps | grep faddy-backend"
