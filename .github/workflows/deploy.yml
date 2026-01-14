@@ -38,21 +38,20 @@ jobs:
           curl -sL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
           chmod +x /usr/local/bin/border0
 
-      - name: Deploy to EC2 via Border0
+      - n - name: Deploy to EC2 via Border0
         env:
-          # Use the exact secret names you created in GitHub
+          # Border0 CLI automatically uses this for authentication
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
-          # Map your EC2_SSH_KEY secret to a variable the script can use
           SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
         run: |
-          # 1. Write the secret content to a secure file
+          # 1. Prepare the SSH key file
           mkdir -p ~/.ssh
           echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
           chmod 600 ~/.ssh/backend.pem
 
-          # 2. Execute deployment using the Border0 Proxy
-          # The -i flag now points to the file created from EC2_SSH_KEY
+          # 2. Use standard SSH with Border0 as the ProxyCommand
+          # No flags like --identity or --token are used here
           ssh -i ~/.ssh/backend.pem \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
