@@ -40,7 +40,8 @@ jobs:
 
       - name: Deploy to EC2 via Border0
         env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+          # Use BORDER0_AUTH_TOKEN; this is what the CLI looks for automatically
+          BORDER0_AUTH_TOKEN: ${{ secrets.BORDER0_TOKEN }}
           SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
         run: |
@@ -50,24 +51,21 @@ jobs:
           chmod 600 ~/.ssh/backend.pem
 
           # 2. Execute deployment command
-          # Added --token inside ProxyCommand to ensure authentication
+          # Note: We removed '--token' from the ProxyCommand
           ssh -i ~/.ssh/backend.pem \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o BatchMode=yes \
             -o ConnectTimeout=60 \
-            -o ProxyCommand="border0 client proxy --token $BORDER0_TOKEN --host %h" \
+            -o ProxyCommand="border0 client proxy --host %h" \
             ubuntu@$SOCKET_NAME \
             "bash /home/ubuntu/deploy.sh"
 
       - name: Verify deployment
         env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+          BORDER0_AUTH_TOKEN: ${{ secrets.BORDER0_TOKEN }}
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
         run: |
-          # Wait for container to stabilize
           sleep 10
-          # Using --token explicitly here as well
-          border0 client ssh $SOCKET_NAME \
-            --token $BORDER0_TOKEN \
-            -- "docker ps | grep faddy-backend"
+          # The CLI will automatically use BORDER0_AUTH_TOKEN from the env
+          border0 client ssh $SOCKET_NAME -- "docker ps | grep faddy-backend"
