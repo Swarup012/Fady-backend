@@ -38,28 +38,24 @@ jobs:
           curl -sL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
           chmod +x /usr/local/bin/border0
 
-      - name: Deploy to EC2 via Border0
-        env:
-          # Border0 CLI automatically uses this for authentication
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
-          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
-          SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
-        run: |
-          # 1. Prepare the SSH key file
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
-          chmod 600 ~/.ssh/backend.pem
+      - name: Deploy to EC2
+  env:
+    BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
+    SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
+    SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
+  run: |
+    # 1. Setup key
+    mkdir -p ~/.ssh
+    echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
+    chmod 600 ~/.ssh/backend.pem
 
-          # 2. Use standard SSH with Border0 as the ProxyCommand
-          # No flags like --identity or --token are used here
-          ssh -i ~/.ssh/backend.pem \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o BatchMode=yes \
-            -o ConnectTimeout=60 \
-            -o ProxyCommand="border0 client proxy $SOCKET_NAME" \
-            ubuntu@$SOCKET_NAME \
-            "bash /home/ubuntu/deploy.sh"
+    # 2. Connect
+    ssh -i ~/.ssh/backend.pem \
+      -o StrictHostKeyChecking=no \
+      -o BatchMode=yes \
+      -o ProxyCommand="border0 client proxy $SOCKET_NAME" \
+      ubuntu@$SOCKET_NAME \
+      "bash /home/ubuntu/deploy.sh"
 
       - name: Verify deployment
         env:
