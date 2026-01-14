@@ -50,23 +50,22 @@ jobs:
         run: |
           border0 whoami
 
-      - name: Final Sanity Test
+      - name: Final Border0 Sanity Test
         run: |
           mkdir -p ~/.border0
-          # Ensure the JSON is clean
           echo '{"access_token":"${{ secrets.BORDER0_TOKEN }}"}' > ~/.border0/credentials.json
           chmod 600 ~/.border0/credentials.json
 
-          # Removed --org flag
-          # Added -T for automation stability
+          # -T: Crucial! Disables terminal request which hangs in CI/CD
+          # -o BatchMode=yes: Prevents waiting for any human prompts
           ssh -v -T \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o BatchMode=yes \
             -o ConnectTimeout=60 \
             -o ProxyCommand="border0 client proxy %h" \
-            ubuntu@your-new-socket-name \
-            "whoami && echo '✅ FINAL SUCCESS'"
+            ubuntu@${{ secrets.BORDER0_SOCKET_NAME }} \
+            "whoami"
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
