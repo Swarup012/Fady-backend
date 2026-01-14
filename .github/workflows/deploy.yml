@@ -7,15 +7,24 @@ on:
       - master
   workflow_dispatch:
 
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
+      # ============================================
+      # Code Checkout
+      # ============================================
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # --- Docker Build and Push Stage ---
+      # ============================================
+      # Docker Build and Push
+      # ============================================
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -31,56 +40,118 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/faddy-backend:latest
+            ${{ env.DOCKER_IMAGE }}:latest
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.DOCKER_IMAGE }}:latest
           cache-to: type=inline
           platforms: linux/amd64
 
-      # --- Border0 CLI Installation Stage ---
-      - name: Install Border0 CLI
-        run: |
-          # Use -fsSL to follow redirects and ensure we get the binary
-          sudo curl -fsSL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
-          sudo chmod +x /usr/local/bin/border0
-          border0 version
-
-      # --- Border0 Connection Stage ---
-      - name: Setup Border0 Connection
-        uses: borderzero/gh-action@v2
+      # ============================================
+      # Border0 Setup
+      # ============================================
+      - name: Setup Border0
+        uses: borderzero/setup-border0-action@v1
         with:
           token: ${{ secrets.BORDER0_TOKEN }}
-          background-mode: true
 
-      # --- Remote Deployment Stage ---
+      - name: Verify Border0 authentication
+        run: |
+          border0 version
+          echo "Authenticated successfully"
+
+      # ============================================
+      # Deployment via Border0
+      # ============================================
       - name: Deploy to EC2 via Border0
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
-          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
-          SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
+        timeout-minutes: 5
         run: |
-          # 1. Setup the PEM key file from secrets
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
-          chmod 600 ~/.ssh/backend.pem
+          echo "🚀 Starting deployment to EC2..."
           
-          # 2. Execute deployment via ProxyCommand
-          # Note: No --token flag is needed if BORDER0_TOKEN is in the env
-          ssh -i ~/.ssh/backend.pem \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o BatchMode=yes \
-            -o ConnectTimeout=60 \
-            -o ProxyCommand="border0 client proxy $SOCKET_NAME" \
-            ubuntu@$SOCKET_NAME \
-            "bash /home/ubuntu/deploy.sh"
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} << 'ENDSSH'
+            set -e
+            
+            echo "📍 Connected to EC2 instance"
+            echo "👤 Current user: $(whoami)"
+            echo "📁 Current directory: $(pwd)"
+            
+            cd /home/ubuntu
+            
+            echo "🔄 Running deployment script..."
+            bash deploy.sh
+            
+            echo "✅ Deployment script completed"
+          ENDSSH
+          
+          echo "✅ Deployment commands executed successfully"
 
-      # --- Verification Stage ---
+      # ============================================
+      # Deployment Verification
+      # ============================================
       - name: Verify deployment
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
-          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
+        timeout-minutes: 3
         run: |
+          echo "⏳ Waiting for container to stabilize..."
           sleep 15
-          # Use Border0 CLI to verify the container is running
-          border0 client ssh $SOCKET_NAME -- "docker ps | grep faddy-backend"
+          
+          echo "🔍 Verifying deployment..."
+          
+          border0 client ssh ${{ secrets.BORDER0_SOCKET_NAME }} << 'ENDSSH'
+            set -e
+            
+            echo "=== Docker Container Status ==="
+            if docker ps | grep -q faddy-backend; then
+              echo "✅ Container is running"
+              docker ps | grep faddy-backend
+            else
+              echo "❌ Container is not running"
+              echo ""
+              echo "=== Container Logs (Last 50 lines) ==="
+              docker logs --tail 50 faddy-backend 2>&1 || true
+              exit 1
+            fi
+            
+            echo ""
+            echo "=== Health Check ==="
+            if docker exec faddy-backend curl -f http://localhost:3000/health 2>/dev/null; then
+              echo "✅ Health check passed"
+            else
+              echo "⚠️  Health endpoint not responding (container may still be starting)"
+            fi
+            
+            echo ""
+            echo "=== Deployment Information ==="
+            echo "Container ID: $(docker ps --filter name=faddy-backend --format '{{.ID}}')"
+            echo "Image: $(docker ps --filter name=faddy-backend --format '{{.Image}}')"
+            echo "Status: $(docker ps --filter name=faddy-backend --format '{{.Status}}')"
+            
+          ENDSSH
+          
+          echo ""
+          echo "✅ Deployment verified successfully!"
+
+      # ============================================
+      # Deployment Summary
+      # ============================================
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎉 DEPLOYMENT SUCCESSFUL"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Image: ${{ env.DOCKER_IMAGE }}:latest"
+          echo "🏷️  SHA: ${{ github.sha }}"
+          echo "🌐 Socket: ${{ secrets.BORDER0_SOCKET_NAME }}"
+          echo "⏰ Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "👤 Triggered by: ${{ github.actor }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Deployment failed
+        if: failure()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "❌ DEPLOYMENT FAILED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Please check the logs above for details"
+          echo "Socket: ${{ secrets.BORDER0_SOCKET_NAME }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          exit 1
