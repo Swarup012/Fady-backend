@@ -50,23 +50,21 @@ jobs:
         run: |
           border0 whoami
 
-      - name: Final Sanity Test (New Socket)
+      - name: Ultimate Sanity Test
         run: |
-          # 1. Setup session
           mkdir -p ~/.border0
           echo '{"access_token":"${{ secrets.BORDER0_TOKEN }}"}' > ~/.border0/credentials.json
-          chmod 600 ~/.border0/credentials.json
-
-          # 2. Run the test
-          # REPLACE 'your-new-socket-name' with the actual name you gave it
+          
+          # 1. BatchMode=yes stops the 'hanging' on prompts
+          # 2. -T ensures we don't request a terminal (Headless mode)
           ssh -v -T \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=60 \
             -o BatchMode=yes \
-            -o ProxyCommand="border0 client proxy %h" \
+            -o ConnectTimeout=60 \
+            -o ProxyCommand="border0 client proxy --org swarup %h" \
             ubuntu@your-new-socket-name \
-            "whoami && echo '✅ Connection to Localhost SSH Successful'"
+            "whoami"
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
