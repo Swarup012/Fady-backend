@@ -52,24 +52,27 @@ jobs:
 
       - name: Border0 SSH Sanity Test
         run: |
-          # 1. Clear and setup the credentials directory
+          # 1. Prepare the Border0 session directory
           rm -rf ~/.border0
           mkdir -p ~/.border0
           
-          # 2. Write the credentials JSON manually
-          # This tells the 'proxy' command exactly which token to use
+          # 2. Manually inject the token into the credentials file
+          # This ensures the 'proxy' command doesn't trigger a browser login
           echo '{"access_token":"${{ secrets.BORDER0_TOKEN }}"}' > ~/.border0/credentials.json
           chmod 600 ~/.border0/credentials.json
 
-          # 3. Test the tunnel with a simple 'whoami'
-          # -o BatchMode=yes ensures it doesn't wait for human input
-          ssh -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o BatchMode=yes \
-              -o ConnectTimeout=15 \
-              -o ProxyCommand="border0 client proxy %h" \
-              ubuntu@ssh-ip-172-31-2-181 \
-              "whoami"
+          # 3. Execute the 'whoami' test
+          # -v: Detailed logs to see the handshake
+          # -o ConnectTimeout=60: Gives the tunnel time to establish in CI
+          # -o BatchMode=yes: Prevents the script from hanging on a password prompt
+          ssh -v \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o BatchMode=yes \
+            -o ProxyCommand="border0 client proxy %h" \
+            ubuntu@ssh-ip-172-31-2-181 \
+            "whoami && echo '✅ Connection Successful' && uptime"
       - name: Deploy to EC2 via Border0
         env:
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
