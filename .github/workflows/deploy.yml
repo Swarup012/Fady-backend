@@ -40,7 +40,6 @@ jobs:
 
       - name: Deploy to EC2 via Border0
         env:
-          # The CLI in 2026 automatically looks for BORDER0_TOKEN
           BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
           SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
@@ -50,17 +49,14 @@ jobs:
           echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
           chmod 600 ~/.ssh/backend.pem
 
-          # 2. Execute deployment command
-          # SYNTAX FIX: No flags like --token or --host. 
-          # The socket name is passed as a direct argument.
-          ssh -i ~/.ssh/backend.pem \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o BatchMode=yes \
-            -o ConnectTimeout=60 \
-            -o ProxyCommand="border0 client proxy $SOCKET_NAME" \
-            ubuntu@$SOCKET_NAME \
-            "bash /home/ubuntu/deploy.sh"
+          # 2. Use the direct Border0 SSH client (Headless Mode)
+          # This command handles the tunnel and authentication in one step
+          border0 client ssh $SOCKET_NAME \
+            --token $BORDER0_TOKEN \
+            --identity ~/.ssh/backend.pem \
+            --ssh-user ubuntu \
+            -- "bash /home/ubuntu/deploy.sh"
+
 
       - name: Verify deployment
         env:
