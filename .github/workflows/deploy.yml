@@ -42,12 +42,13 @@ jobs:
           SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
           SSH_KEY_CONTENT: ${{ secrets.EC2_SSH_KEY }}
         run: |
-          # 1. Setup SSH directory and key
+          # 1. Setup the PEM key file correctly
           mkdir -p ~/.ssh
           echo "$SSH_KEY_CONTENT" > ~/.ssh/backend.pem
           chmod 600 ~/.ssh/backend.pem
-
-          # 2. Execute deployment command via Border0 Proxy
+      
+          # 2. Execute deployment via ProxyCommand
+          # Note: No --token flag is needed if BORDER0_TOKEN is in the env
           ssh -i ~/.ssh/backend.pem \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
@@ -57,11 +58,9 @@ jobs:
             ubuntu@$SOCKET_NAME \
             "bash /home/ubuntu/deploy.sh"
 
-      - name: Verify deployment
-        env:
-          BORDER0_TOKEN: ${{ secrets.BORDER0_TOKEN }}
-          SOCKET_NAME: ${{ secrets.BORDER0_SOCKET_NAME }}
+      - name: Install Border0 CLI
         run: |
-          sleep 10
-          # Using the Border0 CLI to check docker status
-          border0 client ssh $SOCKET_NAME -- "docker ps | grep faddy-backend"
+          # Use -L to follow redirects and -o to specify the output path
+          sudo curl -fsSL https://download.border0.com/linux_amd64/border0 -o /usr/local/bin/border0
+          sudo chmod +x /usr/local/bin/border0
+          border0 version
