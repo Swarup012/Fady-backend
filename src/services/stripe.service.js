@@ -1,6 +1,17 @@
 // src/services/stripe.service.js
-const { stripe, STRIPE_CONFIG } = require('../config/stripe.config');
+// DEPRECATED - Use Paddle instead
+const { stripe } = require('../config/stripe.config');
+const { PLAN_CONFIG } = require('../config/plans.config');
 const { supabaseAdmin } = require('../config/supabase.config');
+
+// Use PLAN_CONFIG for backward compatibility
+const STRIPE_CONFIG = {
+  prices: {
+    starter_monthly: process.env.STRIPE_PRICE_STARTER_MONTHLY,
+    starter_yearly: process.env.STRIPE_PRICE_STARTER_YEARLY,
+  },
+  ...PLAN_CONFIG
+};
 
 const stripeService = {
   /**

@@ -43,6 +43,9 @@ services:
     volumes:
       # Mount logs directory for persistence
       - ./logs:/app/logs
+    extra_hosts:
+      # Fix for Jio ISP DNS routing issue - bypass broken Jio DNS for Supabase
+      - "atvdxtnuimpyhpknrwww.supabase.co:172.64.149.246"
 
 networks:
   fady-network:

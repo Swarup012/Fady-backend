@@ -13,6 +13,7 @@ const userRoutes = require("./routes/user.routes");
 const organizationRoutes = require("./routes/organization.routes");
 const invitationRoutes = require("./routes/invitation.routes");
 const notificationRoutes = require("./routes/notification.routes");
+const customDomainRoutes = require("./routes/custom-domain.routes");
 const { authenticate } = require("./middleware/auth.middleware");
 const { injectOrganization } = require("./middleware/organization.middleware");
 
@@ -37,9 +38,14 @@ const corsOptions = {
     }
     
     // Allow all subdomains of your production domain
-    // Matches: *.yourdomain.com (e.g., startups.fady.com, acme.fady.com)
-    const productionPattern = /^https:\/\/[\w-]+\.fady\.com$/;
+    // Matches: *.faddy.site (e.g., notion.faddy.site, acme.faddy.site)
+    const productionPattern = /^https:\/\/[\w-]+\.faddy\.site$/;
     if (productionPattern.test(origin)) {
+      return callback(null, true);
+    }
+    
+    // Also allow the main domain
+    if (origin === 'https://faddy.site') {
       return callback(null, true);
     }
     
@@ -54,11 +60,17 @@ const corsOptions = {
 // Middleware her
 app.use(cors(corsOptions));
 
-// ⚠️ CRITICAL: Stripe webhook MUST come BEFORE express.json()
-// Stripe needs raw body for signature verification
-// Register ONLY webhook route with raw body parsing
-const { handleStripeWebhook } = require("./webhooks/stripe.webhook");
-app.post("/api/stripe/webhook", express.raw({ type: 'application/json' }), handleStripeWebhook);
+// ⚠️ CRITICAL: Webhooks MUST come BEFORE express.json()
+// Paddle needs parsed JSON body for signature verification
+// Register webhook routes here
+// const { handleStripeWebhook } = require("./webhooks/stripe.webhook"); // DISABLED - Using Paddle only
+const { handlePaddleWebhook } = require("./webhooks/paddle.webhook");
+
+// Stripe webhook (needs raw body) - DISABLED
+// app.post("/api/stripe/webhook", express.raw({ type: 'application/json' }), handleStripeWebhook);
+
+// Paddle webhook (needs parsed JSON body)
+app.post("/api/paddle/webhook", express.json(), handlePaddleWebhook);
 
 // NOW we can parse JSON for all other routes (including other Stripe routes)
 app.use(express.json());
@@ -132,9 +144,11 @@ app.use("/api/invitations", invitationRoutes);
 // ✅ NOTIFICATION ROUTES (preferences, unsubscribe, history)
 app.use("/api/notifications", notificationRoutes);
 
-// ✅ STRIPE ROUTES (webhook already registered above with raw body)
-const stripeRoutes = require("./routes/stripe.routes");
-app.use("/api/stripe", stripeRoutes);
+// ✅ PAYMENT ROUTES - Using Paddle only
+// const stripeRoutes = require("./routes/stripe.routes"); // DISABLED - Using Paddle only
+const paddleRoutes = require("./routes/paddle.routes");
+// app.use("/api/stripe", stripeRoutes); // DISABLED - Using Paddle only
+app.use("/api/paddle", paddleRoutes);
 
 // ✅ TRACKED USERS ROUTES (usage monitoring)
 const trackedUsersRoutes = require("./routes/tracked-users.routes");
@@ -143,6 +157,17 @@ app.use("/api/tracked-users", authenticate, injectOrganization, trackedUsersRout
 // ✅ ADMIN ROUTES (manual reset, status checks)
 const adminRoutes = require("./routes/admin.routes");
 app.use("/api/admin", authenticate, injectOrganization, adminRoutes);
+
+// ✅ CONTACT ROUTES (hybrid - works with or without authentication)
+const contactRoutes = require("./routes/contact.routes");
+app.use("/api/contact", contactRoutes);
+
+// ✅ WEBHOOK ROUTES (authenticated, organization-scoped)
+const webhookRoutes = require("./routes/webhook.routes");
+app.use("/api/webhooks", authenticate, injectOrganization, webhookRoutes);
+
+// ✅ CUSTOM DOMAIN ROUTES (authenticated, organization-scoped)
+app.use("/api/custom-domains", authenticate, injectOrganization, customDomainRoutes);
 
 // ✅ AUTHENTICATED ROUTES WITH ORGANIZATION CONTEXT
 // Organization middleware is added to validate subdomain access

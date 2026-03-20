@@ -2,7 +2,7 @@ const app = require('./src/app');
 const config = require('./src/config/env.config');
 const { initializeRedis, testRedisConnection, closeRedis } = require('./src/config/redis.config');
 const { initializeSocket, closeSocket } = require('./src/socket/socket.config');
-const { validateStripeConfig } = require('./src/config/stripe.config');
+// const { validateStripeConfig } = require('./src/config/stripe.config'); // DISABLED - Using Paddle only
 const { initializeScheduler, stopScheduler } = require('./src/jobs/scheduler');
 const http = require('http');
 
@@ -37,13 +37,8 @@ server.listen(PORT, async () => {
   
   console.log('🔌 Socket.io: Ready for real-time connections');
   
-  // Validate Stripe configuration
-  try {
-    await validateStripeConfig();
-    console.log('💳 Stripe: Ready for payments');
-  } catch (error) {
-    console.log('⚠️  Stripe: Not configured (payments disabled)');
-  }
+  // Stripe disabled - using Paddle only
+  console.log('💳 Payments: Using Paddle (Stripe disabled)');
   
   // Initialize cron jobs
   try {

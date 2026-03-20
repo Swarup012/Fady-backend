@@ -22,10 +22,6 @@ const createBoardValidation = [
     .optional()
     .isBoolean()
     .withMessage("is_private must be a boolean"),
-  body("color")
-    .optional()
-    .matches(/^#[0-9A-Fa-f]{6}$/)
-    .withMessage("Color must be a valid hex color"),
   body("icon")
     .optional()
     .trim()
@@ -57,10 +53,6 @@ const updateBoardValidation = [
     .optional()
     .isBoolean()
     .withMessage("is_private must be a boolean"),
-  body("color")
-    .optional()
-    .matches(/^#[0-9A-Fa-f]{6}$/)
-    .withMessage("Color must be a valid hex color"),
   body("icon")
     .optional()
     .trim()

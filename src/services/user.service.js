@@ -254,10 +254,46 @@ const userService = {
       }
 
       // 4. Send team invites (if any)
-      if (onboardingData.teamInvites && onboardingData.teamInvites.length > 0) {
-        // TODO: Implement email invitation logic
-        // For now, just log the invites
-        console.log('Team invites to send:', onboardingData.teamInvites);
+      // 4. Send team invitations if provided
+      let invitationsSent = 0;
+      if (onboardingData.teamInvites && onboardingData.teamInvites.length > 0 && organization) {
+        console.log('📧 Sending team invites:', onboardingData.teamInvites);
+        
+        const invitationService = require('./invitation.service');
+        const emailService = require('./email.service');
+        
+        for (const email of onboardingData.teamInvites) {
+          try {
+            // Create invitation with default 'member' role
+            const invitation = await invitationService.createInvitation(
+              organization.id,
+              email,
+              userId, // inviter is the user completing onboarding
+              'member' // default role for onboarding invites
+            );
+            
+            // Send invitation email
+            try {
+              await emailService.sendInvitationEmail(
+                invitation.email,
+                invitation.token,
+                invitation.organization,
+                invitation.inviter.name || invitation.inviter.email,
+                invitation.role
+              );
+              invitationsSent++;
+              console.log(`✅ Invitation sent to ${email}`);
+            } catch (emailError) {
+              console.error(`⚠️ Failed to send email to ${email}:`, emailError);
+              // Continue with other invitations even if one fails
+            }
+          } catch (inviteError) {
+            console.error(`❌ Failed to create invitation for ${email}:`, inviteError);
+            // Continue with other invitations even if one fails
+          }
+        }
+        
+        console.log(`📧 Successfully sent ${invitationsSent} out of ${onboardingData.teamInvites.length} invitations`);
       }
 
       // 5. Fetch organization_role and job_role from organization_members table
@@ -290,7 +326,7 @@ const userService = {
         user: userWithRoles,
         organization,
         board,
-        invitesSent: onboardingData.teamInvites?.length || 0,
+        invitesSent: invitationsSent || 0,
       };
     } catch (error) {
       throw new Error(`Failed to complete onboarding: ${error.message}`);

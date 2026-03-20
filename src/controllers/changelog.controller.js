@@ -196,9 +196,12 @@ const changelogController = {
       const { id } = req.params;
       const organizationId = req.organization?.id;
 
+      const frontendOrigin = req.headers['origin'] || req.headers['referer']?.replace(/\/$/, '') || null;
+
       const changelog = await changelogService.publishChangelog(
         id,
-        organizationId
+        organizationId,
+        frontendOrigin,
       );
 
       return ResponseUtil.success(res, "Changelog published successfully", {

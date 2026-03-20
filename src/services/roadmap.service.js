@@ -45,7 +45,7 @@ const roadmapService = {
         .select(`
           *,
           created_by:users!roadmap_items_created_by_fkey(id, name, email, avatar_url),
-          board:boards!roadmap_items_board_id_fkey(id, name, slug, color, icon),
+          board:boards!roadmap_items_board_id_fkey(id, name, slug, icon),
           votes:roadmap_votes(count),
           comments:roadmap_comments(count),
           linked_feedback:roadmap_feedback_links(
@@ -203,7 +203,7 @@ const roadmapService = {
           linked_feedback:roadmap_feedback_links(
             feedback:posts(id, title, status, upvotes)
           ),
-          board:boards(id, name, slug, color, icon)
+          board:boards(id, name, slug, icon)
         `)
         .eq('id', itemId)
         .single();
@@ -256,7 +256,7 @@ const roadmapService = {
         .select(`
           *,
           created_by:users!roadmap_items_created_by_fkey(id, name, email, avatar_url),
-          board:boards(id, name, slug, color, icon)
+          board:boards(id, name, slug, icon)
         `)
         .single();
 

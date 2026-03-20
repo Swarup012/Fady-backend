@@ -9,7 +9,7 @@
  */
 
 const { supabaseAdmin } = require('../config/supabase.config');
-const { STRIPE_CONFIG } = require('../config/stripe.config');
+const { PLAN_CONFIG } = require('../config/plans.config');
 
 /**
  * Check if organization has active subscription
@@ -170,7 +170,7 @@ const checkFeatureLimit = (featureName) => {
       }
 
       // Get feature limit for current plan
-      const planConfig = STRIPE_CONFIG.plans[org.subscription_plan];
+      const planConfig = PLAN_CONFIG.plans[org.subscription_plan];
       const limit = planConfig?.features?.[featureName];
 
       // -1 means unlimited

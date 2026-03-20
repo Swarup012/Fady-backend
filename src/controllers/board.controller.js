@@ -64,6 +64,9 @@ class BoardController {
       if (error.message === "Access denied to this private board") {
         return ResponseUtil.error(res, "Access denied", 403);
       }
+      if (error.message === "This board is not visible to your role") {
+        return ResponseUtil.error(res, "Access denied: This board is not visible to your role", 403);
+      }
       console.error("Get board controller error:", error);
       next(error);
     }
@@ -199,7 +202,7 @@ class BoardController {
             `
              *,
              author:users!author_id(id, name, email),
-             board:boards!board_id(id, name, slug, color, icon)
+             board:boards!board_id(id, name, slug, icon)
            `,
           )
           .eq("board_id", board.id)
@@ -235,7 +238,7 @@ class BoardController {
           `
            *,
            author:users!author_id(id, name, email),
-           board:boards!board_id(id, name, slug, color, icon)
+           board:boards!board_id(id, name, slug, icon)
          `,
         )
         .eq("board_id", board.id)
@@ -276,7 +279,7 @@ class BoardController {
           `
            *,
            author:users!author_id(id, name, email, avatar_url),
-           board:boards!board_id(id, name, slug, color, icon, is_private, organization_id)
+           board:boards!board_id(id, name, slug, icon, is_private, organization_id)
          `,
         )
         .eq("id", id)
@@ -335,50 +338,43 @@ class BoardController {
           name: "Feature Requests",
           slug: "feature-requests",
           icon: "💡",
-          color: "#6366f1",
         },
         {
           id: "2",
           name: "Bug Reports",
           slug: "bug-reports",
           icon: "🐛",
-          color: "#ef4444",
         },
         {
           id: "3",
           name: "General Feedback",
           slug: "general-feedback",
           icon: "💬",
-          color: "#10b981",
         },
         {
           id: "4",
           name: "Questions",
           slug: "questions",
           icon: "❓",
-          color: "#f59e0b",
         },
         {
           id: "5",
           name: "Announcements",
           slug: "announcements",
           icon: "📢",
-          color: "#8b5cf6",
         },
-        { id: "6", name: "Ideas", slug: "ideas", icon: "💭", color: "#ec4899" },
+        { id: "6", name: "Ideas", slug: "ideas", icon: "💭" },
         {
           id: "7",
           name: "Support",
           slug: "support",
           icon: "🆘",
-          color: "#14b8a6",
         },
         {
           id: "8",
           name: "Documentation",
           slug: "documentation",
           icon: "📚",
-          color: "#06b6d4",
         },
       ];
 
@@ -396,7 +392,7 @@ class BoardController {
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { name, description, is_private, color, icon, category, visible_to_roles } = req.body;
+      const { name, description, is_private, icon, category, visible_to_roles } = req.body;
       const owner_id = req.user.id;
 
       // Get user's organization_id (if they have one)
@@ -409,7 +405,6 @@ class BoardController {
         name,
         description,
         is_private,
-        color,
         icon,
         category,
         owner_id,
@@ -499,7 +494,12 @@ class BoardController {
   async checkSlug(req, res, next) {
     try {
       const { slug } = req.params;
-      const available = await boardService.checkSlugAvailability(slug);
+      const organizationId = req.user?.organization_id || req.user?.current_organization_id;
+
+      console.log('🔍 checkSlug controller:', { slug, organizationId, userId: req.user?.id });
+
+      // Check slug availability within the user's organization
+      const available = await boardService.checkSlugAvailability(slug, organizationId);
 
       return ResponseUtil.success(res, "Slug checked", {
         slug,

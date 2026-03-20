@@ -1,5 +1,5 @@
-# Use Node.js LTS version
-FROM node:18-alpine
+# Use Node.js LTS version (20+ required for Supabase)
+FROM node:20-alpine
 
 # Set working directory
 WORKDIR /app

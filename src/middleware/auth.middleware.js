@@ -48,18 +48,34 @@ const authenticate = async (req, res, next) => {
 
     console.log(`❌ Session cache MISS - fetching from database`);
 
-    // Verify token with Supabase
+    let userId;
+    
+    // Try to verify as Supabase token first
     const { data: { user }, error } = await supabase.auth.getUser(token);
 
     if (error || !user) {
-      return ResponseUtil.error(res, 'Invalid or expired token', 401);
+      // If Supabase verification fails, try to verify as custom JWT (from Google OAuth)
+      console.log('⚠️ Supabase token verification failed, trying custom JWT...');
+      
+      try {
+        const jwt = require('jsonwebtoken');
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+        userId = decoded.userId;
+        console.log('✅ Custom JWT verified for user:', userId);
+      } catch (jwtError) {
+        console.error('❌ Custom JWT verification failed:', jwtError.message);
+        return ResponseUtil.error(res, 'Invalid or expired token', 401);
+      }
+    } else {
+      userId = user.id;
+      console.log('✅ Supabase token verified for user:', userId);
     }
 
     // Get user profile from database (use supabaseAdmin to bypass RLS)
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('users')
       .select('*')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
 
     if (profileError || !profile) {
@@ -262,4 +278,38 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { authenticate, optionalAuthenticate, authorize };
+/**
+ * Optional authentication middleware
+ * Authenticates user if token is present, but doesn't fail if not
+ * Useful for hybrid endpoints that work for both authenticated and unauthenticated users
+ */
+const optionalAuth = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      // No token provided, continue as unauthenticated
+      req.user = null;
+      return next();
+    }
+
+    // Verify token
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      // Invalid token, continue as unauthenticated
+      req.user = null;
+      return next();
+    }
+
+    // Valid token, attach user
+    req.user = user;
+    next();
+  } catch (error) {
+    // Any error, continue as unauthenticated
+    req.user = null;
+    next();
+  }
+};
+
+module.exports = { authenticate, optionalAuthenticate, authorize, optionalAuth };

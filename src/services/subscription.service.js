@@ -14,7 +14,7 @@ const subscriptionService = {
       const updateData = {
         subscription_status: subscriptionData.status,
         subscription_plan: subscriptionData.plan || 'pro',
-        stripe_subscription_id: subscriptionData.subscriptionId,
+        paddle_subscription_id: subscriptionData.subscriptionId,
         current_period_start: subscriptionData.currentPeriodStart 
           ? new Date(subscriptionData.currentPeriodStart * 1000).toISOString() 
           : null,
@@ -150,8 +150,9 @@ const subscriptionService = {
           current_period_start,
           current_period_end,
           cancel_at_period_end,
-          stripe_customer_id,
-          stripe_subscription_id
+          paddle_customer_id,
+          paddle_subscription_id,
+          billing_provider
         `)
         .eq('id', organizationId)
         .single();

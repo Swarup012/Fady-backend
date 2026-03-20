@@ -389,6 +389,197 @@ class EmailService {
   }
 
   /**
+   * Send contact form notification to admin
+   * @param {object} contactData - Contact form submission data
+   */
+  async sendContactNotification(contactData) {
+    try {
+      const { email, subject, message, is_authenticated, created_at } = contactData;
+      
+      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('📧 CONTACT FORM NOTIFICATION');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('From User:', email);
+      console.log('Subject:', subject);
+      console.log('Authenticated:', is_authenticated ? 'Yes' : 'No');
+      console.log('Sending to: support@faddy.site');
+      
+      const { data, error } = await resend.emails.send({
+        from: config.resendFromEmail || 'Feedy <onboarding@resend.dev>',
+        to: 'support@faddy.site',
+        subject: `[Contact Form] ${subject} - From ${email}`,
+        html: this.getContactNotificationTemplate(contactData),
+        replyTo: email, // Admin can reply directly to user
+      });
+
+      if (error) {
+        console.error('❌ Failed to send contact notification:', error);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        // Don't throw error - submission was saved to database
+        return { success: false, error };
+      }
+
+      console.log('✅ Contact notification sent successfully:', data);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      return { success: true, data };
+    } catch (error) {
+      console.error('❌ Error sending contact notification:', error);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * HTML email template for contact form notification to admin
+   */
+  getContactNotificationTemplate(contactData) {
+    const { email, subject, message, is_authenticated, user_agent, ip_address, created_at } = contactData;
+    const submittedAt = new Date(created_at).toLocaleString('en-US', {
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    // Get subject emoji
+    const subjectEmoji = {
+      'Feature Request': '💡',
+      'Bug Report': '🐛',
+      'Billing': '💳',
+      'Other': '📝'
+    }[subject] || '📝';
+
+    return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New Contact Form Submission</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f5f5f5; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center;">
+              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600;">
+                ${subjectEmoji} New Contact Form Submission
+              </h1>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 30px;">
+              <!-- User Info Box -->
+              <div style="background-color: #f8f9fa; border-left: 4px solid #667eea; padding: 20px; margin-bottom: 25px; border-radius: 6px;">
+                <h2 style="margin: 0 0 15px; color: #333333; font-size: 18px; font-weight: 600;">
+                  Contact Information
+                </h2>
+                <table width="100%" cellpadding="8" cellspacing="0" style="font-size: 14px;">
+                  <tr>
+                    <td style="color: #666666; width: 140px;"><strong>From:</strong></td>
+                    <td style="color: #333333;">
+                      <a href="mailto:${email}" style="color: #667eea; text-decoration: none;">${email}</a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="color: #666666;"><strong>Subject:</strong></td>
+                    <td style="color: #333333;">
+                      <span style="display: inline-block; padding: 4px 12px; background-color: #667eea; color: white; border-radius: 12px; font-size: 12px; font-weight: 600;">
+                        ${subject}
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="color: #666666;"><strong>User Type:</strong></td>
+                    <td style="color: #333333;">
+                      ${is_authenticated 
+                        ? '<span style="color: #28a745;">✅ Authenticated User</span>' 
+                        : '<span style="color: #6c757d;">👤 Guest</span>'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="color: #666666;"><strong>Submitted:</strong></td>
+                    <td style="color: #333333;">${submittedAt}</td>
+                  </tr>
+                </table>
+              </div>
+
+              <!-- Message Box -->
+              <div style="margin-bottom: 25px;">
+                <h2 style="margin: 0 0 15px; color: #333333; font-size: 18px; font-weight: 600;">
+                  Message
+                </h2>
+                <div style="background-color: #ffffff; border: 2px solid #e9ecef; border-radius: 6px; padding: 20px; font-size: 15px; line-height: 1.6; color: #333333; white-space: pre-wrap; word-wrap: break-word;">
+${message}
+                </div>
+              </div>
+
+              <!-- Technical Details (Collapsible in real email clients) -->
+              <details style="margin-top: 25px; padding: 15px; background-color: #f8f9fa; border-radius: 6px;">
+                <summary style="cursor: pointer; color: #666666; font-size: 13px; font-weight: 600;">
+                  📊 Technical Details
+                </summary>
+                <table width="100%" cellpadding="6" cellspacing="0" style="margin-top: 10px; font-size: 12px; color: #666666;">
+                  ${user_agent ? `
+                  <tr>
+                    <td style="width: 100px;"><strong>User Agent:</strong></td>
+                    <td style="word-break: break-all;">${user_agent}</td>
+                  </tr>` : ''}
+                  ${ip_address ? `
+                  <tr>
+                    <td><strong>IP Address:</strong></td>
+                    <td>${ip_address}</td>
+                  </tr>` : ''}
+                </table>
+              </details>
+
+              <!-- Quick Actions -->
+              <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e9ecef; text-align: center;">
+                <p style="margin: 0 0 15px; color: #666666; font-size: 14px;">
+                  Quick Actions:
+                </p>
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td align="center">
+                      <a href="mailto:${email}?subject=Re: ${encodeURIComponent(subject)}" 
+                         style="display: inline-block; background-color: #667eea; color: #ffffff; text-decoration: none; padding: 12px 30px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 5px;">
+                        📧 Reply to User
+                      </a>
+                      <a href="${config.frontendUrl}/admin" 
+                         style="display: inline-block; background-color: #6c757d; color: #ffffff; text-decoration: none; padding: 12px 30px; border-radius: 6px; font-weight: 600; font-size: 14px; margin: 0 5px;">
+                        🎛️ Go to Dashboard
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8f9fa; padding: 20px; text-align: center; border-top: 1px solid #e9ecef;">
+              <p style="margin: 0 0 5px; color: #999999; font-size: 12px;">
+                This notification was sent from your Feedy contact form
+              </p>
+              <p style="margin: 0; color: #cccccc; font-size: 11px;">
+                You can reply directly to this email to respond to the user
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+    `.trim();
+  }
+
+  /**
    * Test email configuration
    */
   async testEmailConfiguration() {
@@ -421,6 +612,16 @@ class EmailService {
    */
   async sendCompletionEmail(email, htmlContent, subject = '🎉 Feature Completed!') {
     try {
+      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('📧 [EMAIL SERVICE] Sending completion email');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('To:', email);
+      console.log('Subject:', subject);
+      console.log('From:', config.resendFromEmail || 'Feedy <onboarding@resend.dev>');
+      console.log('HTML length:', htmlContent?.length || 0, 'characters');
+      console.log('Resend client:', resend ? '✅ Initialized' : '❌ Not initialized');
+      console.log('API Key:', config.resendApiKey ? '✅ Present (' + config.resendApiKey.substring(0, 10) + '...)' : '❌ Missing');
+      
       const { data, error } = await resend.emails.send({
         from: config.resendFromEmail || 'Feedy <onboarding@resend.dev>',
         to: email,
@@ -429,14 +630,21 @@ class EmailService {
       });
 
       if (error) {
-        console.error(`❌ Failed to send completion email to ${email}:`, error);
+        console.error('❌ [EMAIL SERVICE] Resend API returned error:');
+        console.error('   Error:', JSON.stringify(error, null, 2));
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
         throw new Error(`Failed to send email: ${error.message}`);
       }
 
-      console.log(`✅ Completion email sent to ${email}:`, data);
+      console.log('✅ [EMAIL SERVICE] Email sent successfully!');
+      console.log('   Email ID:', data?.id);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
       return { success: true, data };
     } catch (error) {
-      console.error(`❌ Error sending completion email to ${email}:`, error);
+      console.error('❌ [EMAIL SERVICE] Exception caught:');
+      console.error('   Error:', error.message);
+      console.error('   Stack:', error.stack);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
       return { success: false, error: error.message };
     }
   }

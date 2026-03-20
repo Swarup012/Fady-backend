@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { rateLimitLogin } = require('../middleware/rate-limit.middleware');
+const { rateLimitLogin, rateLimitGoogleOAuth } = require('../middleware/rate-limit.middleware');
 const validate = require('../middleware/validate.middleware');
 const validationRules = require('../utils/validation.util');
 const upload = require('../middleware/upload.middleware');
@@ -41,6 +41,9 @@ router.post(
 router.get('/verify-reset-token', authController.verifyResetToken);
 
 router.post('/refresh', authController.refreshSession);
+
+// Google OAuth authentication
+router.post('/google', rateLimitGoogleOAuth, authController.googleAuth);
 
 // Resend verification email
 router.post(

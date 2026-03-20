@@ -1,0 +1,80 @@
+# Custom domain Nginx configuration template
+# This file is dynamically generated for each custom domain
+
+server {
+    listen 80;
+    server_name {{DOMAIN}};
+
+    # Let's Encrypt ACME challenge for SSL certificate
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Redirect all HTTP to HTTPS after SSL is setup
+    location / {
+        return 301 https://$server_name$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name {{DOMAIN}};
+
+    # SSL Certificate paths (managed by Certbot)
+    ssl_certificate /etc/letsencrypt/live/{{DOMAIN}}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{DOMAIN}}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+
+    # Max upload size
+    client_max_body_size 20M;
+
+    # Frontend (Port 5173)
+    location / {
+        proxy_pass http://localhost:5173;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Custom-Domain "{{DOMAIN}}";
+        proxy_set_header X-Organization-Id "{{ORGANIZATION_ID}}";
+    }
+
+    # Backend API (Port 3000)
+    location /api {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Custom-Domain "{{DOMAIN}}";
+        proxy_set_header X-Organization-Id "{{ORGANIZATION_ID}}";
+    }
+
+    # WebSocket (Port 3000)
+    location /socket.io {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Custom-Domain "{{DOMAIN}}";
+        proxy_set_header X-Organization-Id "{{ORGANIZATION_ID}}";
+    }
+
+    # Logs
+    access_log /var/log/nginx/{{DOMAIN}}_access.log;
+    error_log /var/log/nginx/{{DOMAIN}}_error.log;
+}

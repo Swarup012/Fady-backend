@@ -1,5 +1,6 @@
 const { supabaseAdmin } = require("../config/supabase.config");
 const cache = require("./redis.service");
+const { emitBoardCreatedWebhook } = require("./webhook-events");
 
 class BoardService {
   /**
@@ -133,29 +134,35 @@ class BoardService {
       // Check access (multiple conditions):
       // 1. If board is public, anyone can view
       if (!data.is_private) {
-        // Still check role visibility for public boards using userRole parameter
-        if (data.visible_to_roles && data.visible_to_roles.length > 0 && userRole) {
+        // ✅ Owners and Admins bypass role visibility checks
+        const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
+        
+        // Still check role visibility for public boards (but not for owners/admins)
+        if (!isOwnerOrAdmin && data.visible_to_roles && data.visible_to_roles.length > 0 && userRole) {
           console.log(`🔍 Role visibility check - Board: ${data.name}, visible_to_roles: ${JSON.stringify(data.visible_to_roles)}, user role: ${userRole}`);
           if (!data.visible_to_roles.includes(userRole)) {
             console.error(`❌ Role mismatch - Board requires one of: ${data.visible_to_roles.join(', ')}, but user has: ${userRole}`);
             throw new Error("This board is not visible to your role");
           }
         }
-        console.log(`✅ Retrieved public board: ${data.name}`);
+        console.log(`✅ Retrieved public board: ${data.name}${isOwnerOrAdmin ? ' (owner/admin access)' : ''}`);
         return data;
       }
 
       // 2. If user is in same organization as board
       if (user && user.current_organization_id && data.organization_id === user.current_organization_id) {
-        // Check role visibility using userRole parameter
-        if (data.visible_to_roles && data.visible_to_roles.length > 0 && userRole) {
+        // ✅ Owners and Admins bypass role visibility checks
+        const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
+        
+        // Check role visibility (but not for owners/admins)
+        if (!isOwnerOrAdmin && data.visible_to_roles && data.visible_to_roles.length > 0 && userRole) {
           console.log(`🔍 Role visibility check - Board: ${data.name}, visible_to_roles: ${JSON.stringify(data.visible_to_roles)}, user role: ${userRole}`);
           if (!data.visible_to_roles.includes(userRole)) {
             console.error(`❌ Role mismatch - Board requires one of: ${data.visible_to_roles.join(', ')}, but user has: ${userRole}`);
             throw new Error("This board is not visible to your role");
           }
         }
-        console.log(`✅ Retrieved organization board: ${data.name}`);
+        console.log(`✅ Retrieved organization board: ${data.name}${isOwnerOrAdmin ? ' (owner/admin access)' : ''}`);
         return data;
       }
 
@@ -177,7 +184,7 @@ class BoardService {
   /**
    * Create new board
    */
-   async createBoard({ name, description, is_private, color, icon, category, owner_id, organization_id, visible_to_roles }) {
+   async createBoard({ name, description, is_private, icon, category, owner_id, organization_id, visible_to_roles }) {
      try {
        const baseSlug = name
          .toLowerCase()
@@ -189,12 +196,19 @@ class BoardService {
        let counter = 1;
        let slugExists = true;
 
+       // Check slug uniqueness within the organization (not globally)
        while (slugExists) {
-         const { data: existing } = await supabaseAdmin
+         let query = supabaseAdmin
            .from('boards')
            .select('id')
-           .eq('slug', slug)
-           .maybeSingle();
+           .eq('slug', slug);
+
+         // Scope to organization if provided
+         if (organization_id) {
+           query = query.eq('organization_id', organization_id);
+         }
+
+         const { data: existing } = await query.maybeSingle();
 
          if (!existing) {
            slugExists = false;
@@ -210,7 +224,6 @@ class BoardService {
          description: description || null,
          is_private: is_private || false,
          category: category || 'General',
-         color: color || '#6366f1',
          icon: icon || '💡',
          owner_id,
          post_count: 0
@@ -243,7 +256,10 @@ class BoardService {
        if (organization_id) {
          await cache.deletePattern(`boards:org:${organization_id}:*`);
        }
-       
+
+       // 🔗 Fire webhook: board.created
+       emitBoardCreatedWebhook(organization_id, data);
+
        return data;
      } catch (error) {
        console.error('❌ Create board error:', error);
@@ -283,13 +299,20 @@ class BoardService {
         let counter = 1;
         let slugExists = true;
 
+        // Check slug uniqueness within the organization (not globally)
         while (slugExists) {
-          const { data: existing } = await supabaseAdmin
+          let query = supabaseAdmin
             .from("boards")
-            .select("id")
+            .select("id, organization_id")
             .eq("slug", slug)
-            .neq("id", boardId)
-            .maybeSingle();
+            .neq("id", boardId);
+
+          // Scope to the same organization as the board being updated
+          if (board.organization_id) {
+            query = query.eq("organization_id", board.organization_id);
+          }
+
+          const { data: existing } = await query.maybeSingle();
 
           if (!existing) {
             slugExists = false;
@@ -381,19 +404,33 @@ class BoardService {
   }
 
   /**
-   * Check if board slug is available
+   * Check if board slug is available within an organization
+   * @param {string} slug - The slug to check
+   * @param {string} organizationId - The organization ID to scope the check to
    */
-  async checkSlugAvailability(slug) {
+  async checkSlugAvailability(slug, organizationId = null) {
     try {
-      const { data, error } = await supabaseAdmin
+      let query = supabaseAdmin
         .from("boards")
         .select("id")
-        .eq("slug", slug)
-        .maybeSingle();
+        .eq("slug", slug);
+
+      // If organizationId is provided, check only within that organization
+      if (organizationId) {
+        query = query.eq("organization_id", organizationId);
+        console.log(`🔍 Checking slug "${slug}" availability in organization: ${organizationId}`);
+      } else {
+        console.log(`🔍 Checking slug "${slug}" availability globally (no org scope)`);
+      }
+
+      const { data, error } = await query.maybeSingle();
 
       if (error) throw error;
 
-      return !data;
+      const available = !data;
+      console.log(`   Slug "${slug}" is ${available ? '✅ available' : '❌ taken'}`);
+
+      return available;
     } catch (error) {
       console.error("❌ Check slug error:", error);
       throw error;

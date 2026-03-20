@@ -21,22 +21,23 @@ const PLAN_LIMITS = {
     max_boards: Infinity, // Unlimited
     max_posts_per_board: Infinity, // Unlimited
     max_posts_per_month: Infinity, // Unlimited
-    max_team_members: 5, // 5 team members
+    max_team_members: Infinity, // Starter: Unlimited team members and viewers
+    max_admin_members: 5, // Starter: Max 5 admins
     max_tracked_users: 125, // 125 tracked users included
-    max_roadmap_items: 1, // 1 roadmap
+    max_roadmap_items: Infinity, // Unlimited roadmap items
     overage_allowed: true, // Can exceed 125 with $6/50 users billing
     grace_buffer: 25, // 20% grace (don't charge until 150 users)
     overage_price_per_block: 6.00, // $6 per 50 users
     overage_block_size: 50, // 50 users per block
   },
-  // Keep 'pro' as alias for backward compatibility during migration
   pro: {
     max_boards: Infinity,
     max_posts_per_board: Infinity,
     max_posts_per_month: Infinity,
-    max_team_members: 5, // 5 team members
+    max_team_members: Infinity, // PRO: Unlimited team members and viewers
+    max_admin_members: 10, // PRO: Max 10 admins
     max_tracked_users: 125,
-    max_roadmap_items: 1,
+    max_roadmap_items: Infinity, // Unlimited roadmap items
     overage_allowed: true,
     grace_buffer: 25,
     overage_price_per_block: 6.00,
@@ -103,11 +104,11 @@ async function getPlanLimits(organizationId) {
       effectivePlan: plan === 'pro' ? 'starter' : plan 
     });
     
-    // Map 'pro' to 'starter' for backward compatibility
-    const effectivePlan = plan === 'pro' ? 'starter' : plan;
+    // Use plan as-is (pro is now a separate plan)
+    const effectivePlan = plan;
     
     // Verify subscription is active/trialing for paid plans
-    if (effectivePlan === 'starter') {
+    if (effectivePlan === 'starter' || effectivePlan === 'pro') {
       const isActive = ['active', 'trialing'].includes(org.subscription_status);
       if (!isActive) {
         console.warn(`Organization ${organizationId} has '${plan}' plan but status is '${org.subscription_status}', defaulting to free`);
@@ -188,16 +189,28 @@ async function checkBoardLimit(req, res, next) {
 }
 
 /**
- * Middleware: Check post creation limit (per month)
+ * Middleware: Check post creation limit (per board)
  */
 async function checkPostLimit(req, res, next) {
   try {
+    console.log('\n╔══════════════════════════════════════════════════════════════════╗');
+    console.log('║  🔍 [DEBUG] checkPostLimit - Middleware triggered                ║');
+    console.log('╚══════════════════════════════════════════════════════════════════╝');
+    
     const userId = req.user.id;
     const userOrganizationId = req.user.organization_id;
     
+    console.log('   User ID:', userId);
+    console.log('   User Org ID:', userOrganizationId);
+    console.log('   Request params:', JSON.stringify(req.params));
+    console.log('   Request path:', req.path);
+    
     // Get the board to check if it's public and find its organization
     const boardSlug = req.params.slug;
+    console.log('   Board slug:', boardSlug);
+    
     if (!boardSlug) {
+      console.log('   ⚠️ No board slug, skipping check');
       return next(); // No board slug, skip check
     }
 
@@ -250,21 +263,26 @@ async function checkPostLimit(req, res, next) {
     }
 
     // Count posts on THIS specific board
+    console.log('   ⏳ Counting posts on board:', board.id);
+    
     const { count, error } = await supabaseAdmin
       .from('posts')
       .select('id', { count: 'exact', head: true })
       .eq('board_id', board.id);
 
     if (error) {
-      console.error('Error counting posts:', error);
+      console.error('   ❌ Error counting posts:', error);
       return res.status(500).json({
         success: false,
         message: 'Error checking post limit',
       });
     }
 
+    console.log('   📊 Posts on this board:', count, '/', limits.max_posts_per_board);
+
     // Check if per-board limit reached
     if (count >= limits.max_posts_per_board) {
+      console.log('   ❌ POST LIMIT REACHED! Blocking request.');
       // Get organization name for better error message
       const { data: org } = await supabaseAdmin
         .from('organizations')
@@ -301,10 +319,12 @@ async function checkPostLimit(req, res, next) {
 
 /**
  * Get current usage stats for an organization
+ * Optional query parameter: boardSlug - to get post count for a specific board
  */
 async function getUsageStats(req, res) {
   try {
     const organizationId = req.user.organization_id;
+    const boardSlug = req.query.boardSlug; // Optional: get post count for specific board
 
     if (!organizationId) {
       return res.status(400).json({
@@ -315,7 +335,7 @@ async function getUsageStats(req, res) {
 
     // Get plan limits
     const limits = await getPlanLimits(organizationId);
-    console.log('🔍 getUsageStats - Plan limits for org:', { organizationId, limits });
+    console.log('🔍 getUsageStats - Plan limits for org:', { organizationId, limits, boardSlug });
 
     // Count boards
     const { count: boardCount } = await supabaseAdmin
@@ -325,10 +345,6 @@ async function getUsageStats(req, res) {
     
     console.log('🔍 getUsageStats - Board count:', { boardCount, max_boards: limits.max_boards });
 
-    // Get start of current month
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
     // Get organization members
     const { data: orgMembers } = await supabaseAdmin
       .from('organization_members')
@@ -337,14 +353,54 @@ async function getUsageStats(req, res) {
 
     const userIds = orgMembers ? orgMembers.map(m => m.user_id) : [];
 
-    // Count total posts across all boards (for backward compatibility)
+    // Count total posts across all boards
     const { count: totalPostCount } = await supabaseAdmin
       .from('posts')
       .select('id', { count: 'exact', head: true })
       .eq('organization_id', organizationId);
 
+    // If boardSlug is provided, get post count for that specific board
+    let boardPostCount = 0;
+    if (boardSlug) {
+      const { data: board } = await supabaseAdmin
+        .from('boards')
+        .select('id')
+        .eq('slug', boardSlug)
+        .eq('organization_id', organizationId)
+        .single();
+
+      if (board) {
+        const { count } = await supabaseAdmin
+          .from('posts')
+          .select('id', { count: 'exact', head: true })
+          .eq('board_id', board.id);
+        
+        boardPostCount = count || 0;
+        console.log(`🔍 getUsageStats - Posts on board "${boardSlug}":`, boardPostCount);
+      }
+    }
+
     // Check if has starter subscription
     const hasStarterAccess = await hasActiveSubscription(organizationId);
+
+    // If boardSlug is provided, return post count for that board
+    // Otherwise, return generic per-board info
+    const postsData = boardSlug
+      ? {
+          current: boardPostCount,
+          limit: limits.max_posts_per_board === Infinity ? 'unlimited' : limits.max_posts_per_board,
+          remaining: limits.max_posts_per_board === Infinity ? 'unlimited' : Math.max(0, limits.max_posts_per_board - boardPostCount),
+          per_board_limit: limits.max_posts_per_board === Infinity ? 'unlimited' : limits.max_posts_per_board,
+          board_slug: boardSlug,
+        }
+      : {
+          current: 0, // Frontend should not check total posts
+          limit: 'per_board', // Indicate that limits are enforced per board, not globally
+          remaining: 'per_board',
+          per_board_limit: limits.max_posts_per_board === Infinity ? 'unlimited' : limits.max_posts_per_board,
+          total_posts: totalPostCount || 0, // Info only
+          note: `Limits are enforced per board (${limits.max_posts_per_board} posts per board)`
+        };
 
     return res.json({
       success: true,
@@ -356,12 +412,7 @@ async function getUsageStats(req, res) {
             limit: limits.max_boards === Infinity ? 'unlimited' : limits.max_boards,
             remaining: limits.max_boards === Infinity ? 'unlimited' : Math.max(0, limits.max_boards - (boardCount || 0)),
           },
-          posts: {
-            current: totalPostCount || 0,
-            limit: limits.max_posts_per_board === Infinity ? 'unlimited' : limits.max_posts_per_board,
-            remaining: limits.max_posts_per_board === Infinity ? 'unlimited' : `${limits.max_posts_per_board} per board`,
-            per_board_limit: limits.max_posts_per_board === Infinity ? 'unlimited' : limits.max_posts_per_board,
-          },
+          posts: postsData,
           team_members: {
             current: userIds.length,
             limit: limits.max_team_members === Infinity ? 'unlimited' : limits.max_team_members,
@@ -402,7 +453,68 @@ async function checkInvitationLimit(req, res, next) {
     // Get plan limits
     const limits = await getPlanLimits(organizationId);
 
-    // If unlimited, skip check
+    // Get the role being invited (from request body)
+    const invitedRole = req.body.role || 'member';
+
+    // For Pro plan with unlimited members but limited admins
+    if (limits.max_team_members === Infinity && limits.max_admin_members) {
+      // Only check admin limit if inviting an admin
+      if (invitedRole === 'admin') {
+        // Count current admin members
+        const { count: adminCount, error: adminError } = await supabaseAdmin
+          .from('organization_members')
+          .select('id', { count: 'exact', head: true })
+          .eq('organization_id', organizationId)
+          .eq('role', 'admin');
+
+        if (adminError) {
+          console.error('Error counting admin members:', adminError);
+          return res.status(500).json({
+            success: false,
+            message: 'Error checking admin member limit',
+          });
+        }
+
+        // Count pending admin invitations
+        const { count: pendingAdminInvites, error: adminInviteError } = await supabaseAdmin
+          .from('organization_invitations')
+          .select('id', { count: 'exact', head: true })
+          .eq('organization_id', organizationId)
+          .eq('role', 'admin')
+          .eq('status', 'pending');
+
+        if (adminInviteError) {
+          console.error('Error counting admin invitations:', adminInviteError);
+          return res.status(500).json({
+            success: false,
+            message: 'Error checking admin invitation limit',
+          });
+        }
+
+        const totalAdminCount = adminCount + pendingAdminInvites;
+
+        // Check if admin limit reached
+        if (totalAdminCount >= limits.max_admin_members) {
+          return res.status(403).json({
+            success: false,
+            message: `Admin limit reached. Pro plan allows ${limits.max_admin_members} admin(s). You currently have ${adminCount} admin(s) and ${pendingAdminInvites} pending admin invitation(s).`,
+            error: 'ADMIN_LIMIT_REACHED',
+            upgrade_required: false,
+            current_admins: adminCount,
+            pending_admin_invitations: pendingAdminInvites,
+            total_admin_count: totalAdminCount,
+            max_allowed_admins: limits.max_admin_members,
+          });
+        }
+
+        console.log(`✅ Admin member check passed: ${adminCount} admins + ${pendingAdminInvites} pending = ${totalAdminCount}/${limits.max_admin_members}`);
+      } else {
+        console.log(`✅ Non-admin member invitation - unlimited members allowed on Pro plan`);
+      }
+      return next();
+    }
+
+    // For Free/Starter plans - check total member limit (all roles)
     if (limits.max_team_members === Infinity) {
       return next();
     }
@@ -443,7 +555,7 @@ async function checkInvitationLimit(req, res, next) {
     if (totalCount >= limits.max_team_members) {
       return res.status(403).json({
         success: false,
-        message: `Team member limit reached. Free plan allows ${limits.max_team_members} team member(s). You currently have ${memberCount} member(s) and ${pendingInviteCount} pending invitation(s). Upgrade to Starter for unlimited team members.`,
+        message: `Team member limit reached. Your plan allows ${limits.max_team_members} team member(s). You currently have ${memberCount} member(s) and ${pendingInviteCount} pending invitation(s). Upgrade to Pro for unlimited team members.`,
         error: 'TEAM_MEMBER_LIMIT_REACHED',
         upgrade_required: true,
         current_members: memberCount,
@@ -467,8 +579,8 @@ async function checkInvitationLimit(req, res, next) {
 }
 
 /**
- * Middleware: Check roadmap creation limit (for multi-roadmap feature)
- * Checks the number of roadmaps (not roadmap items)
+ * Middleware: Check roadmap (container) creation limit
+ * Checks the number of roadmaps (not roadmap_items) for the organization
  */
 async function checkRoadmapLimit(req, res, next) {
   try {
@@ -489,12 +601,12 @@ async function checkRoadmapLimit(req, res, next) {
       return next();
     }
 
-    // Count existing roadmaps (not roadmap_items) for this organization
+    // Count existing roadmaps (containers) for this organization
     const { count, error } = await supabaseAdmin
       .from('roadmaps')
       .select('id', { count: 'exact', head: true })
       .eq('organization_id', organizationId)
-      .eq('is_archived', false); // Only count non-archived roadmaps
+      .eq('is_archived', false);
 
     if (error) {
       console.error('Error counting roadmaps:', error);
@@ -508,7 +620,7 @@ async function checkRoadmapLimit(req, res, next) {
     if (count >= limits.max_roadmap_items) {
       return res.status(403).json({
         success: false,
-        message: `Roadmap limit reached. Free plan allows ${limits.max_roadmap_items} roadmap(s). Upgrade to Starter for 1 roadmap.`,
+        message: `Roadmap limit reached. Your plan allows ${limits.max_roadmap_items} roadmap(s). Upgrade to Starter for unlimited roadmaps.`,
         error: 'ROADMAP_LIMIT_REACHED',
         upgrade_required: true,
         current_count: count,
@@ -527,11 +639,161 @@ async function checkRoadmapLimit(req, res, next) {
   }
 }
 
+/**
+ * Middleware: Check roadmap items creation limit
+ * Checks the number of roadmap_items for the organization
+ */
+async function checkRoadmapItemLimit(req, res, next) {
+  try {
+    const organizationId = req.user.current_organization_id || req.user.organization_id;
+
+    if (!organizationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'No organization associated with user',
+      });
+    }
+
+    // Get plan limits
+    const limits = await getPlanLimits(organizationId);
+
+    // If unlimited, skip check
+    if (limits.max_roadmap_items === Infinity) {
+      return next();
+    }
+
+    // Count existing roadmap_items for this organization
+    // Note: roadmap_items doesn't have organization_id, so we join through boards
+    const { count, error } = await supabaseAdmin
+      .from('roadmap_items')
+      .select('id, board:boards!inner(organization_id)', { count: 'exact', head: true })
+      .eq('board.organization_id', organizationId);
+
+    if (error) {
+      console.error('Error counting roadmap items:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Error checking roadmap items limit',
+      });
+    }
+
+    // Check if limit reached
+    if (count >= limits.max_roadmap_items) {
+      return res.status(403).json({
+        success: false,
+        message: `Roadmap items limit reached. Your plan allows ${limits.max_roadmap_items} roadmap item(s). Upgrade to Starter for unlimited items.`,
+        error: 'ROADMAP_ITEMS_LIMIT_REACHED',
+        upgrade_required: true,
+        current_count: count,
+        max_allowed: limits.max_roadmap_items,
+      });
+    }
+
+    // Limit not reached, proceed
+    next();
+  } catch (error) {
+    console.error('Error in checkRoadmapItemLimit middleware:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error checking roadmap items limit',
+    });
+  }
+}
+
+/**
+ * Middleware: Check organization creation limit
+ * Free plan: 1 organization
+ * Starter plan: 1 organization
+ * Pro plan: 1 organization
+ */
+async function checkOrganizationLimit(req, res, next) {
+  try {
+    const userId = req.user.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not authenticated',
+      });
+    }
+
+    // Get user's subscription plan by checking their current organization
+    // If they don't have an org yet, they're on free plan
+    let userPlan = 'free';
+    let maxOrganizations = 1;
+
+    const { data: userOrgs, error: orgError } = await supabaseAdmin
+      .from('organization_members')
+      .select('organization_id, organizations(subscription_plan, subscription_status)')
+      .eq('user_id', userId);
+
+    if (orgError) {
+      console.error('Error fetching user organizations:', orgError);
+      // Default to free plan if error
+    } else if (userOrgs && userOrgs.length > 0) {
+      // Check if user has any starter plan organization
+      const hasStarterPlan = userOrgs.some(org => {
+        const orgData = org.organizations;
+        return orgData && 
+               ['starter', 'pro'].includes(orgData.subscription_plan) && 
+               ['active', 'trialing'].includes(orgData.subscription_status);
+      });
+
+      if (hasStarterPlan) {
+        userPlan = 'starter';
+        maxOrganizations = 1;
+      }
+    }
+
+    // Count how many organizations the user owns
+    const { count: ownedOrgCount, error: countError } = await supabaseAdmin
+      .from('organizations')
+      .select('id', { count: 'exact', head: true })
+      .eq('owner_id', userId);
+
+    if (countError) {
+      console.error('Error counting owned organizations:', countError);
+      return res.status(500).json({
+        success: false,
+        message: 'Error checking organization limit',
+      });
+    }
+
+    // Check if limit reached
+    if (ownedOrgCount >= maxOrganizations) {
+      return res.status(403).json({
+        success: false,
+        message: userPlan === 'free' 
+          ? `Organization limit reached. Free plan allows ${maxOrganizations} organization. Upgrade to Starter for ${1} organization.`
+          : `Organization limit reached. ${userPlan === 'starter' ? 'Starter' : 'Pro'} plan allows ${maxOrganizations} organization.`,
+        error: 'ORGANIZATION_LIMIT_REACHED',
+        upgrade_required: userPlan === 'free',
+        current_count: ownedOrgCount,
+        max_allowed: maxOrganizations,
+        user_plan: userPlan,
+      });
+    }
+
+    console.log(`✅ Organization limit check passed: ${ownedOrgCount}/${maxOrganizations} (${userPlan} plan)`);
+    
+    // Limit not reached, proceed
+    next();
+  } catch (error) {
+    console.error('Error in checkOrganizationLimit middleware:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error checking organization limit',
+    });
+  }
+}
+
 module.exports = {
   checkBoardLimit,
   checkPostLimit,
   checkInvitationLimit,
   checkRoadmapLimit,
+  checkRoadmapItemLimit,
+  checkOrganizationLimit,
   getUsageStats,
   getPlanLimits,
   hasActiveSubscription,

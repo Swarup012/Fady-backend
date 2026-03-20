@@ -14,7 +14,7 @@
  * =====================================================
  */
 
-const { stripe } = require('../config/stripe.config');
+const { stripe } = require('../config/stripe.config'); // DEPRECATED - kept for legacy webhooks
 const subscriptionService = require('../services/subscription.service');
 
 // Import event handlers

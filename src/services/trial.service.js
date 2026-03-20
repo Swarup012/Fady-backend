@@ -16,7 +16,7 @@
  */
 
 const { supabaseAdmin } = require('../config/supabase.config');
-const { stripe } = require('../config/stripe.config');
+// const { stripe } = require('../config/stripe.config'); // DISABLED - Using Paddle only
 
 class TrialService {
 

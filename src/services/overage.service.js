@@ -16,8 +16,12 @@
  */
 
 const { supabaseAdmin } = require('../config/supabase.config');
-const { stripe, STRIPE_CONFIG } = require('../config/stripe.config');
+// const { stripe } = require('../config/stripe.config'); // DISABLED - Using Paddle only
+const { PLAN_CONFIG } = require('../config/plans.config');
 const cache = require('./redis.service');
+
+// Use PLAN_CONFIG for overage configuration
+const STRIPE_CONFIG = PLAN_CONFIG;
 
 class OverageService {
   

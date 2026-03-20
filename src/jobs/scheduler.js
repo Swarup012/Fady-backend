@@ -17,6 +17,7 @@ const {
 const notificationQueueService = require('../services/notification-queue.service');
 const overageService = require('../services/overage.service');
 const trialService = require('../services/trial.service');
+const webhookDeliveryService = require('../services/webhook-delivery.service');
 
 /**
  * Initialize all scheduled jobs
@@ -207,7 +208,29 @@ function initializeScheduler() {
   });
   
   console.log('✅ Expired trials check scheduled (every 6 hours)');
-  
+
+  // ============================================
+  // WEBHOOK RETRY QUEUE PROCESSOR
+  // ============================================
+  // Schedule: Every minute
+  // Processes failed webhook deliveries that are due for retry
+  // ============================================
+  const webhookRetryJob = cron.schedule('* * * * *', async () => {
+    try {
+      const result = await webhookDeliveryService.processRetryQueue();
+      if (result.processed > 0) {
+        console.log(`🔄 Webhook retry queue: processed ${result.processed} deliveries`);
+      }
+    } catch (error) {
+      console.error('❌ Webhook retry queue processing failed:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "UTC"
+  });
+
+  console.log('✅ Webhook retry queue processor scheduled (every minute)');
+
   // ============================================
   // FUTURE JOBS (Commented out - implement when needed)
   // ============================================
@@ -233,7 +256,8 @@ function initializeScheduler() {
     dailyPeakJob,
     monthlyBillingJob,
     trialRemindersJob,
-    expiredTrialsJob
+    expiredTrialsJob,
+    webhookRetryJob
   };
 }
 
@@ -277,7 +301,12 @@ function stopScheduler(jobs) {
     jobs.expiredTrialsJob.stop();
     console.log('  - Expired trials job stopped');
   }
-  
+
+  if (jobs?.webhookRetryJob) {
+    jobs.webhookRetryJob.stop();
+    console.log('  - Webhook retry queue job stopped');
+  }
+
   console.log('✅ All jobs stopped');
 }
 

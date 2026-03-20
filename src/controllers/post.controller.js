@@ -104,7 +104,17 @@ class PostController {
       }
 
       const { slug } = req.params;
-      const { title, description } = req.body;
+      const { title, description, images } = req.body;
+
+      // Validate images if provided
+      if (images) {
+        if (!Array.isArray(images)) {
+          return ResponseUtil.error(res, "Images must be an array", 400);
+        }
+        if (images.length > 5) {
+          return ResponseUtil.error(res, "Maximum 5 images allowed per post", 400);
+        }
+      }
 
       // Get board ID from slug
       const { data: board } = await require("../config/supabase.config")
@@ -117,11 +127,16 @@ class PostController {
         return ResponseUtil.error(res, "Board not found", 404);
       }
 
+      // Capture frontend origin for webhook URL generation
+      const frontendOrigin = req.headers['origin'] || req.headers['referer']?.replace(/\/$/, '') || null;
+
       const post = await postService.createPost({
         board_id: board.id,
         title,
         description,
         author_id: req.user.id,
+        images: images || [], // ✅ Pass images array
+        frontendOrigin,
       });
 
       return ResponseUtil.success(
@@ -154,11 +169,14 @@ class PostController {
       const oldPost = await postService.getPostById(id);
       const oldStatus = oldPost?.status;
 
+      const frontendOrigin = req.headers['origin'] || req.headers['referer']?.replace(/\/$/, '') || null;
+
       const post = await postService.updatePost(
         id,
         updates,
         req.user.id,
         req.user.organization_role,
+        frontendOrigin,
       );
 
       // 🔄 SYNC STATUS TO ROADMAP ITEMS (if status changed)
@@ -207,11 +225,14 @@ class PostController {
       const oldPost = await postService.getPostById(id);
       const oldStatus = oldPost?.status;
 
+      const frontendOrigin = req.headers['origin'] || req.headers['referer']?.replace(/\/$/, '') || null;
+
       const post = await postService.updatePostStatus(
         id,
         status,
         req.user.id,
         note,
+        frontendOrigin,
       );
 
       // 🔄 SYNC STATUS TO ROADMAP ITEMS
@@ -266,12 +287,17 @@ class PostController {
   /**
    * Toggle upvote
    * POST /api/posts/:id/upvote
+   * Supports both logged-in users (user_id) and external tracked users (tracking_code)
    */
   async toggleUpvote(req, res, next) {
     try {
       console.log('🎯 toggleUpvote controller called for user:', req.user?.email);
       const { id } = req.params;
-      const result = await postService.toggleUpvote(id, req.user.id);
+      
+      // Get tracking_code from request body (for external tracked users)
+      const trackingCode = req.body?.tracking_code || null;
+      
+      const result = await postService.toggleUpvote(id, req.user?.id, trackingCode);
 
       return ResponseUtil.success(res, "Upvote toggled", result);
     } catch (error) {
@@ -304,6 +330,7 @@ class PostController {
   /**
    * Add comment (supports replies via parent_id)
    * POST /api/posts/:id/comments
+   * Supports both logged-in users (user_id) and external tracked users (tracking_code)
    */
   async addComment(req, res, next) {
     try {
@@ -313,15 +340,16 @@ class PostController {
       }
 
       const { id } = req.params;
-      const { content, parent_id } = req.body;
-      const isAdmin = req.user.organization_role === "admin" || req.user.organization_role === "owner";
+      const { content, parent_id, tracking_code } = req.body;
+      const isAdmin = req.user?.organization_role === "admin" || req.user?.organization_role === "owner";
 
       const comment = await postService.addComment(
         id,
         content,
-        req.user.id,
+        req.user?.id,
         isAdmin,
         parent_id || null,
+        tracking_code || null,
       );
 
       return ResponseUtil.success(

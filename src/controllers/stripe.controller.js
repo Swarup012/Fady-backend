@@ -9,9 +9,11 @@
  */
 
 const stripeService = require('../services/stripe.service');
+const paddleService = require('../services/paddle.service');
 const subscriptionService = require('../services/subscription.service');
-const { getPricingConfig } = require('../config/stripe.config');
+const { getPricingConfig } = require('../config/plans.config');
 const responseUtil = require('../utils/response.util');
+const { supabaseAdmin } = require('../config/supabase.config');
 
 const stripeController = {
   /**
@@ -33,6 +35,7 @@ const stripeController = {
       } = req.body;
       const userId = req.user.id;
       const organizationId = req.user.current_organization_id || req.organization?.id;
+      const userEmail = req.user.email;
 
       // Validation
       if (!organizationId) {
@@ -45,37 +48,69 @@ const stripeController = {
         return responseUtil.error(res, 'Organization already has an active subscription', 400);
       }
 
-      // Determine price ID based on plan and billing cycle
-      let finalPriceId = priceId;
-      if (plan && billingCycle) {
-        const pricingConfig = getPricingConfig();
-        
-        if (plan === 'starter' || plan === 'pro') {
-          // Use the prices from STRIPE_CONFIG, not from plan object
-          const { STRIPE_CONFIG } = require('../config/stripe.config');
-          finalPriceId = billingCycle === 'monthly' 
-            ? STRIPE_CONFIG.prices.starter_monthly
-            : STRIPE_CONFIG.prices.starter_yearly;
+      // Use Paddle for all new users (billing_provider = 'paddle')
+      // You can add logic here to use Stripe for legacy/future users if needed
+      let checkoutUrl;
+      if (process.env.USE_PADDLE === 'true' || true) { // Always use Paddle for now
+        console.log('🔍 Paddle checkout requested', { organizationId, plan, billingCycle, priceId });
+        console.log('🔍 Paddle env vars', {
+          PADDLE_STARTER_PLAN_ID_MONTHLY: process.env.PADDLE_STARTER_PLAN_ID_MONTHLY,
+          PADDLE_STARTER_PLAN_ID_YEARLY: process.env.PADDLE_STARTER_PLAN_ID_YEARLY,
+          PADDLE_API_KEY: !!process.env.PADDLE_API_KEY,
+          PADDLE_VENDOR_ID: process.env.PADDLE_VENDOR_ID,
+        });
+        // Map billingCycle to correct Paddle product ID for starter plan
+        let paddlePlanId = null;
+        if (plan === 'starter') {
+          if (billingCycle === 'yearly') {
+            paddlePlanId = process.env.PADDLE_STARTER_PLAN_ID_YEARLY;
+          } else {
+            paddlePlanId = process.env.PADDLE_STARTER_PLAN_ID_MONTHLY;
+          }
         }
+        if (!paddlePlanId) {
+          return responseUtil.error(res, 'Invalid plan or billing cycle for Paddle', 400);
+        }
+        const paddleCheckout = await paddleService.createCheckoutLink(
+          organizationId,
+          userEmail,
+          paddlePlanId,
+          successUrl || `${process.env.FRONTEND_URL}/admin?checkout=success`,
+          cancelUrl || `${process.env.FRONTEND_URL}/pricing?checkout=cancelled`
+        );
+        // Set billing_provider to 'paddle' in DB
+        await supabaseAdmin
+          .from('organizations')
+          .update({ billing_provider: 'paddle', updated_at: new Date().toISOString() })
+          .eq('id', organizationId);
+        
+        // Return both URL (for redirect) and transactionId (for overlay)
+        return responseUtil.success(res, 'Paddle checkout link created', {
+          url: paddleCheckout.url,
+          transactionId: paddleCheckout.transactionId
+        });
+      } else {
+        // Stripe logic (kept for legacy/future use)
+        let finalPriceId = priceId;
+        if (plan && billingCycle && !finalPriceId) {
+          // Use environment variable price IDs for Stripe
+          finalPriceId = billingCycle === 'monthly' 
+            ? process.env.STRIPE_PRICE_STARTER_MONTHLY
+            : process.env.STRIPE_PRICE_STARTER_YEARLY;
+        }
+        const session = await stripeService.createCheckoutSession(
+          organizationId,
+          userId,
+          finalPriceId,
+          successUrl || `${process.env.FRONTEND_URL}/admin?checkout=success`,
+          cancelUrl || `${process.env.FRONTEND_URL}/pricing?checkout=cancelled`,
+          skipTrial === true ? false : true
+        );
+        return responseUtil.success(res, 'Stripe checkout session created', {
+          sessionId: session.id,
+          url: session.url,
+        });
       }
-
-      // Create checkout session with trial settings
-      const session = await stripeService.createCheckoutSession(
-        organizationId,
-        userId,
-        finalPriceId,
-        successUrl || `${process.env.FRONTEND_URL}/admin?checkout=success`,
-        cancelUrl || `${process.env.FRONTEND_URL}/pricing?checkout=cancelled`,
-        skipTrial === true ? false : true // Enable trial unless explicitly skipped
-      );
-
-      console.log(`✅ Checkout session created for org ${organizationId}: ${session.id} (plan: ${plan}, cycle: ${billingCycle}, trial: ${!skipTrial})`);
-
-      return responseUtil.success(res, 'Checkout session created', {
-        sessionId: session.id,
-        url: session.url,
-      });
-
     } catch (error) {
       console.error('Error creating checkout session:', error);
       return responseUtil.error(res, error.message, 500);
@@ -155,6 +190,7 @@ const stripeController = {
         currentPeriodEnd: subscriptionInfo.current_period_end,
         cancelAtPeriodEnd: subscriptionInfo.cancel_at_period_end,
         hasActiveSubscription: ['active', 'trialing'].includes(subscriptionInfo.subscription_status),
+        billingProvider: subscriptionInfo.billing_provider || 'stripe', // Default to stripe for legacy users
       });
 
     } catch (error) {

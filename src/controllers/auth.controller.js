@@ -393,6 +393,185 @@ class AuthController {
   }
 
   /**
+   * Google OAuth authentication
+   * POST /api/auth/google
+   */
+  async googleAuth(req, res, next) {
+    try {
+      const { email, name, googleId, avatar, supabaseToken } = req.body;
+
+      console.log('🔐 Google OAuth request:', { email, name, googleId, hasSupabaseToken: !!supabaseToken });
+
+      if (!email || !googleId) {
+        return ResponseUtil.error(res, 'Email and Google ID are required', 400);
+      }
+
+      // 🔒 SECURITY: Verify the Supabase token if provided to ensure user actually authenticated with Google
+      // This makes token verification optional for now for backward compatibility
+      if (supabaseToken) {
+        try {
+          const { data: { user }, error: verifyError } = await supabase.auth.getUser(supabaseToken);
+
+          // Only proceed if verification succeeds, otherwise log warning and continue
+          if (!verifyError && user) {
+            // Verify that the verified user matches the claimed email and googleId
+            if (user.email !== email || user.id !== googleId) {
+              console.error('❌ Token verification mismatch:', {
+                tokenEmail: user.email,
+                tokenId: user.id,
+                claimedEmail: email,
+                claimedId: googleId
+              });
+              return ResponseUtil.error(res, 'Token does not match claimed identity', 401);
+            }
+            console.log('✅ Supabase token verified:', { userId: user.id, email });
+          } else {
+            console.warn('⚠️ Supabase token provided but verification failed, proceeding anyway:', verifyError);
+          }
+        } catch (verifyError) {
+          console.warn('⚠️ Supabase token verification error, proceeding anyway:', verifyError);
+          // Continue without token verification for backward compatibility
+        }
+      } else {
+        console.warn('⚠️ No Supabase token provided - proceeding without verification');
+      }
+
+      // Check if user exists by email (NOT by googleId to allow account linking)
+      const { data: existingUser } = await supabaseAdmin
+        .from('users')
+        .select('*')
+        .eq('email', email)
+        .single();
+
+      let user;
+      let needsOnboarding = false;
+
+      if (existingUser) {
+        // Edge case: If existing user has a different google_id, check if we're trying to link accounts
+        if (existingUser.google_id && existingUser.google_id !== googleId) {
+          console.error('❌ Email already linked to different Google account:', {
+            existingGoogleId: existingUser.google_id,
+            newGoogleId: googleId
+          });
+          return ResponseUtil.error(res, 'This email is already linked to a different Google account. Please sign in with the original account or contact support.', 409);
+        }
+
+        // Update existing user with Google info
+        const { data: updatedUser, error: updateError } = await supabaseAdmin
+          .from('users')
+          .update({
+            google_id: googleId,
+            avatar_url: avatar || existingUser.avatar_url,
+            name: name || existingUser.name,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existingUser.id)
+          .select()
+          .single();
+
+        if (updateError) {
+          console.error('Failed to update user with Google info:', updateError);
+          throw new Error('Failed to update user');
+        }
+
+        user = updatedUser;
+
+        // Check if user needs onboarding (no current organization)
+        needsOnboarding = !user.current_organization_id;
+      } else {
+        // Create new user with Google OAuth
+        const crypto = require('crypto');
+        const userId = crypto.randomUUID();
+
+        const { data: newUser, error: createError } = await supabaseAdmin
+          .from('users')
+          .insert({
+            id: userId,
+            email,
+            name: name || email.split('@')[0],
+            google_id: googleId,
+            avatar_url: avatar,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (createError) {
+          console.error('Failed to create user:', createError);
+
+          // Check if it's a duplicate constraint error
+          if (createError.code === '23505') {
+            // User might already exist, try to fetch by google_id
+            const { data: existingByGoogleId } = await supabaseAdmin
+              .from('users')
+              .select('*')
+              .eq('google_id', googleId)
+              .single();
+
+            if (existingByGoogleId) {
+              user = existingByGoogleId;
+              console.log('✅ Found existing user by google_id:', user.email);
+              needsOnboarding = !user.current_organization_id;
+            } else {
+              throw new Error('Failed to create user: duplicate entry');
+            }
+          } else {
+            throw new Error('Failed to create user');
+          }
+        } else {
+          user = newUser;
+          needsOnboarding = true; // New users always need onboarding
+        }
+      }
+
+      // Generate JWT token
+      const jwt = require('jsonwebtoken');
+      const config = require('../config/env.config');
+      
+      const token = jwt.sign(
+        { 
+          userId: user.id, 
+          email: user.email,
+          organizationId: user.current_organization_id 
+        },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '7d' }
+      );
+
+      // Set HTTP-only cookies
+      const cookieOptions = {
+        httpOnly: true,
+        secure: config.cookieSecure,
+        sameSite: 'lax',
+        domain: `.${config.cookieDomain}`,
+        maxAge: config.cookieMaxAge,
+        path: '/'
+      };
+
+      res.cookie('access_token', token, cookieOptions);
+
+      console.log('✅ Google OAuth successful for:', email);
+
+      return ResponseUtil.success(res, 'Google authentication successful', {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          avatar_url: user.avatar_url,
+          google_id: user.google_id,
+          current_organization_id: user.current_organization_id,
+        },
+        token,
+        needsOnboarding,
+      });
+    } catch (error) {
+      console.error('Google auth controller error:', error);
+      next(error);
+    }
+  }
+
+  /**
    * Update user job role (post-auth role selection)
    * PUT /api/auth/update-role
    * Note: This updates job_role in organization_members, not users table

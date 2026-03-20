@@ -31,15 +31,22 @@ const authorizeOrgRole = (allowedRoles = []) => {
         });
       }
 
-      // Get user's organization role
-      const { data: user, error } = await supabaseAdmin
-        .from('users')
-        .select('organization_role')
-        .eq('id', userId)
+      // Get user's organization role from organization_members table
+      console.log('🔍 Checking organization_members table...');
+      console.log('   - Query: user_id =', userId);
+      console.log('   - Query: organization_id =', organizationId);
+      
+      const { data: membership, error } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('user_id', userId)
         .eq('organization_id', organizationId)
         .single();
 
-      if (error || !user) {
+      console.log('   - Membership found:', membership);
+      console.log('   - Error:', error);
+
+      if (error || !membership) {
         console.error('❌ User not found in organization:', error);
         return res.status(403).json({
           success: false,
@@ -47,7 +54,8 @@ const authorizeOrgRole = (allowedRoles = []) => {
         });
       }
 
-      const userRole = user.organization_role;
+      const userRole = membership.role;
+      console.log('   - User role:', userRole);
       console.log(`🔐 Checking org role: user=${userRole}, allowed=${allowedRoles.join(',')}`);
 
       // Check if user has required role
@@ -102,14 +110,19 @@ const attachOrgRole = async (req, res, next) => {
       return next();
     }
 
-    const { data: user } = await supabaseAdmin
-      .from('users')
-      .select('organization_role')
-      .eq('id', userId)
+    const { data: membership, error: membershipError } = await supabaseAdmin
+      .from('organization_members')
+      .select('role')
+      .eq('user_id', userId)
       .eq('organization_id', organizationId)
       .single();
 
-    req.organizationRole = user?.organization_role || null;
+    if (membershipError) {
+      console.error('❌ Error fetching organization role:', membershipError);
+    }
+
+    req.organizationRole = membership?.role || null;
+    console.log('✅ injectOrganizationRole - Set req.organizationRole:', req.organizationRole);
     next();
   } catch (error) {
     console.error('❌ Attach org role error:', error);

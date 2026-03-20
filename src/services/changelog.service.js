@@ -1,5 +1,6 @@
 const { supabaseAdmin } = require("../config/supabase.config");
 const cache = require("./redis.service");
+const { emitChangelogPublishedWebhook } = require("./webhook-events");
 
 const changelogService = {
   /**
@@ -299,7 +300,7 @@ const changelogService = {
   /**
    * Publish changelog
    */
-  async publishChangelog(id, organizationId) {
+  async publishChangelog(id, organizationId, frontendOrigin = null) {
     try {
       const { data, error } = await supabaseAdmin
         .from("changelogs")
@@ -326,6 +327,9 @@ const changelogService = {
         await cache.delete(`changelog:org:${organizationId}:slug:${data.slug}`);
       }
       console.log(`🗑️  Invalidated changelog cache for org: ${organizationId}`);
+
+      // 🔗 Fire webhook: changelog.published
+      emitChangelogPublishedWebhook(organizationId, data, frontendOrigin);
 
       return data;
     } catch (error) {

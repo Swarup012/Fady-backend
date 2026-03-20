@@ -42,7 +42,7 @@ async function handleCheckoutCompleted(event) {
       }
 
       // Get full subscription details from Stripe
-      const stripe = require('../../config/stripe.config').stripe;
+      const stripe = require('../../config/stripe.config').stripe; // DEPRECATED - legacy webhook
       const subscription = await stripe.subscriptions.retrieve(subscriptionId);
 
       // Determine status

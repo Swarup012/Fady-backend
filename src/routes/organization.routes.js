@@ -3,7 +3,7 @@ const router = express.Router();
 const organizationController = require('../controllers/organization.controller');
 const invitationController = require('../controllers/invitation.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { checkInvitationLimit } = require('../middleware/plan-limits.middleware');
+const { checkInvitationLimit, checkOrganizationLimit } = require('../middleware/plan-limits.middleware');
 
 // Public routes (no authentication required)
 // Get organization by subdomain (for signup page to detect organization)
@@ -21,8 +21,8 @@ router.get('/me', organizationController.getMyOrganization);
 // Get all organizations user belongs to
 router.get('/me/all', organizationController.getMyOrganizations);
 
-// Create new organization
-router.post('/', organizationController.createOrganization);
+// Create new organization (with limit check)
+router.post('/', checkOrganizationLimit, organizationController.createOrganization);
 
 // Update organization (owners only)
 router.put('/:organizationId', organizationController.updateOrganization);

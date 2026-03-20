@@ -1,4 +1,4 @@
-const { redisClient } = require('../config/redis.config');
+const { getRedisClient } = require('../config/redis.config');
 
 /**
  * Rate Limiting Middleware
@@ -15,6 +15,15 @@ const { redisClient } = require('../config/redis.config');
 function createRateLimiter(action, maxRequests, windowSeconds, scope = 'ip') {
   return async (req, res, next) => {
     try {
+      // Get Redis client
+      const redisClient = getRedisClient();
+      
+      // If Redis is not available, skip rate limiting (fail open)
+      if (!redisClient) {
+        console.warn('⚠️  Redis not available - skipping rate limit check');
+        return next();
+      }
+
       // Get identifier (IP or user ID)
       let identifier;
       if (scope === 'ip') {
@@ -107,6 +116,10 @@ const rateLimitVote = createRateLimiter('vote', 100, 3600, 'user');
 // 10 login attempts per 15 minutes per IP (prevent brute force)
 const rateLimitLogin = createRateLimiter('login', 10, 900, 'ip');
 
+// Google OAuth rate limit
+// 5 OAuth attempts per 15 minutes per IP (prevent token abuse)
+const rateLimitGoogleOAuth = createRateLimiter('google_oauth', 5, 900, 'ip');
+
 // API general rate limit
 // 1000 requests per hour per IP (very generous, catches abuse)
 const rateLimitAPI = createRateLimiter('api', 1000, 3600, 'ip');
@@ -117,5 +130,6 @@ module.exports = {
   rateLimitCommentCreation,
   rateLimitVote,
   rateLimitLogin,
+  rateLimitGoogleOAuth,
   rateLimitAPI,
 };

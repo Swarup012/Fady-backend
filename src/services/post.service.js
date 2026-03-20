@@ -2,6 +2,14 @@ const { supabaseAdmin } = require("../config/supabase.config");
 const cache = require("./redis.service");
 const { emitPostUpvoted, emitPostCreated, emitPostUpdated, emitPostDeleted, emitPostCommentCount } = require("../socket/handlers/post.handler");
 const { emitCommentNew, emitCommentUpdated, emitCommentDeleted, emitCommentLiked } = require("../socket/handlers/comment.handler");
+const {
+  emitPostCreatedWebhook,
+  emitPostUpdatedWebhook,
+  emitPostStatusChangedWebhook,
+  emitPostDeletedWebhook,
+  emitCommentCreatedWebhook,
+  emitVoteCreatedWebhook,
+} = require("./webhook-events");
 
 class PostService {
   /**
@@ -28,7 +36,7 @@ class PostService {
           `
           *,
           author:users!author_id(id, name, email),
-          board:boards!board_id(id, name, slug, color, icon)
+          board:boards!board_id(id, name, slug, icon)
         `,
         )
         .eq("is_archived", false)
@@ -99,7 +107,7 @@ class PostService {
           `
           *,
           author:users!author_id(id, name, email),
-          board:boards!board_id(id, name, slug, color, icon)
+          board:boards!board_id(id, name, slug, icon)
         `,
         )
         .eq("board_id", board.id)
@@ -175,7 +183,7 @@ class PostService {
           `
           *,
           author:users!author_id(id, name, email, avatar_url),
-          board:boards!board_id(id, name, slug, color, icon, is_private)
+          board:boards!board_id(id, name, slug, icon, is_private)
         `,
         )
         .eq("id", postId)
@@ -203,8 +211,24 @@ class PostService {
   /**
    * Create new post
    */
-  async createPost({ board_id, title, description, author_id }) {
+  async createPost({ board_id, title, description, author_id, images, frontendOrigin = null }) {
     try {
+      // Validate images array
+      if (images) {
+        if (!Array.isArray(images)) {
+          throw new Error('Images must be an array');
+        }
+        if (images.length > 5) {
+          throw new Error('Maximum 5 images allowed per post');
+        }
+        // Validate each image URL
+        for (const url of images) {
+          if (typeof url !== 'string' || !url.startsWith('http')) {
+            throw new Error('Invalid image URL format');
+          }
+        }
+      }
+
       // Get board to find its organization
       const { data: board, error: boardError } = await supabaseAdmin
         .from('boards')
@@ -226,6 +250,7 @@ class PostService {
         comment_count: 0,
         is_pinned: false,
         is_archived: false,
+        images: images || [], // ✅ Add images array
       };
 
       // Add organization_id if board has one
@@ -262,12 +287,15 @@ class PostService {
         console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
       }
       
-      // �📡 Emit real-time event to board viewers
+      // 📡 Emit real-time event to board viewers
       if (data.board && data.board.slug) {
         emitPostCreated(data.board.slug, data);
         console.log(`📡 Emitted post:created event for board: ${data.board.slug}`);
       }
-      
+
+      // 🔗 Fire webhook: post.created
+      emitPostCreatedWebhook(data.organization_id, data, frontendOrigin);
+
       return data;
     } catch (error) {
       console.error("❌ Create post error:", error);
@@ -278,7 +306,7 @@ class PostService {
   /**
    * Update post
    */
-  async updatePost(postId, updates, userId, userRole) {
+  async updatePost(postId, updates, userId, userRole, frontendOrigin = null) {
     try {
       // Check permissions
       const { data: post } = await supabaseAdmin
@@ -326,7 +354,10 @@ class PostService {
         await cache.delete(`posts:org:${data.organization_id}:all`);
         console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
       }
-      
+
+      // 🔗 Fire webhook: post.updated
+      emitPostUpdatedWebhook(data.organization_id, data, updates, frontendOrigin);
+
       return data;
     } catch (error) {
       console.error("❌ Update post error:", error);
@@ -337,7 +368,7 @@ class PostService {
   /**
    * Update post status (admin only)
    */
-  async updatePostStatus(postId, newStatus, userId, note = null) {
+  async updatePostStatus(postId, newStatus, userId, note = null, frontendOrigin = null) {
     try {
       // Get current status
       const { data: post } = await supabaseAdmin
@@ -393,7 +424,15 @@ class PostService {
         emitPostUpdated(postId, postWithBoard.board.slug, { status: newStatus });
         console.log(`📡 Emitted post:status_changed event for board: ${postWithBoard.board.slug}`);
       }
-      
+
+      // 🔗 Fire webhook: post.status_changed
+      const postForWebhook = {
+        id: postId,
+        title: data.title,
+        board: postWithBoard?.board || null,
+      };
+      emitPostStatusChangedWebhook(data.organization_id, postForWebhook, oldStatus, newStatus, frontendOrigin);
+
       return data;
     } catch (error) {
       console.error("❌ Update status error:", error);
@@ -449,7 +488,10 @@ class PostService {
         emitPostDeleted(postId, post.board.slug);
         console.log(`📡 Emitted post:deleted event for board: ${post.board.slug}`);
       }
-      
+
+      // 🔗 Fire webhook: post.deleted
+      emitPostDeletedWebhook(post.organization_id, postId, post.title, post.board?.slug);
+
       return true;
     } catch (error) {
       console.error("❌ Delete post error:", error);
@@ -459,16 +501,28 @@ class PostService {
 
   /**
    * Toggle upvote
+   * @param {string} postId - Post ID
+   * @param {string} userId - User ID (for logged-in users)
+   * @param {string} trackingCode - Tracking code (for external tracked users)
    */
-  async toggleUpvote(postId, userId) {
+  async toggleUpvote(postId, userId, trackingCode = null) {
     try {
-      // Check if already upvoted
-      const { data: existing } = await supabaseAdmin
+      // Build query to check if already upvoted
+      let existingQuery = supabaseAdmin
         .from("upvotes")
         .select("id")
-        .eq("post_id", postId)
-        .eq("user_id", userId)
-        .maybeSingle();
+        .eq("post_id", postId);
+      
+      // Check by user_id OR tracking_code
+      if (userId) {
+        existingQuery = existingQuery.eq("user_id", userId);
+      } else if (trackingCode) {
+        existingQuery = existingQuery.eq("tracking_code", trackingCode);
+      } else {
+        throw new Error("Either userId or trackingCode is required");
+      }
+      
+      const { data: existing } = await existingQuery.maybeSingle();
 
       if (existing) {
         // Remove upvote
@@ -505,9 +559,13 @@ class PostService {
         return { upvoted: false };
       } else {
         // Add upvote
+        const upvoteData = { post_id: postId };
+        if (userId) upvoteData.user_id = userId;
+        if (trackingCode) upvoteData.tracking_code = trackingCode;
+        
         await supabaseAdmin
           .from("upvotes")
-          .insert([{ post_id: postId, user_id: userId }]);
+          .insert([upvoteData]);
 
         // Get updated upvote count
         const { count } = await supabaseAdmin
@@ -536,7 +594,16 @@ class PostService {
         
         // 📡 Emit Socket.io event
         emitPostUpvoted(postId, true, count || 0, boardSlug);
-        
+
+        // 🔗 Fire webhook: vote.created (only when upvote is added, not removed)
+        emitVoteCreatedWebhook(
+          postWithBoard?.organization_id,
+          postId,
+          null, // post title not fetched here — kept lightweight
+          userId,
+          trackingCode
+        );
+
         return { upvoted: true };
       }
     } catch (error) {
@@ -609,20 +676,29 @@ class PostService {
 
   /**
    * Add comment (supports replies via parent_id)
+   * @param {string} postId - Post ID
+   * @param {string} content - Comment content
+   * @param {string} userId - User ID (for logged-in users)
+   * @param {boolean} isAdmin - Is admin comment
+   * @param {string} parentId - Parent comment ID (for replies)
+   * @param {string} trackingCode - Tracking code (for external tracked users)
    */
-  async addComment(postId, content, userId, isAdmin = false, parentId = null) {
+  async addComment(postId, content, userId, isAdmin = false, parentId = null, trackingCode = null) {
     try {
+      const commentData = {
+        post_id: postId,
+        content,
+        is_admin: isAdmin,
+        parent_id: parentId,
+      };
+      
+      // Add user_id or tracking_code
+      if (userId) commentData.author_id = userId;
+      if (trackingCode) commentData.tracking_code = trackingCode;
+      
       const { data, error } = await supabaseAdmin
         .from("comments")
-        .insert([
-          {
-            post_id: postId,
-            author_id: userId,
-            content,
-            is_admin: isAdmin,
-            parent_id: parentId,
-          },
-        ])
+        .insert([commentData])
         .select(
           `
           *,
@@ -644,7 +720,18 @@ class PostService {
       
       // 📡 Emit Socket.io event
       emitCommentNew(postId, data);
-      
+
+      // 🔗 Fire webhook: comment.created
+      // Fetch post info for the webhook payload
+      const { data: postForComment } = await supabaseAdmin
+        .from("posts")
+        .select("id, title, organization_id")
+        .eq("id", postId)
+        .single();
+      if (postForComment) {
+        emitCommentCreatedWebhook(postForComment.organization_id, data, postForComment);
+      }
+
       // Also update comment count for the post
       const { count } = await supabaseAdmin
         .from("comments")
@@ -906,7 +993,7 @@ class PostService {
         .select(`
           *,
           author:users!author_id(id, name, email, avatar_url),
-          board:boards!board_id(id, name, slug, color, icon, is_private)
+          board:boards!board_id(id, name, slug, icon, is_private)
         `)
         .eq('organization_id', org.id)
         .eq('is_archived', false)

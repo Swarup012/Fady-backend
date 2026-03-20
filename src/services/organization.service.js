@@ -635,6 +635,36 @@ const organizationService = {
         }
       }
 
+      // Check admin limit if promoting to admin
+      if (newRole === 'admin' && targetMember.role !== 'admin') {
+        // Get organization plan
+        const { data: org } = await supabaseAdmin
+          .from('organizations')
+          .select('plan')
+          .eq('id', organizationId)
+          .single();
+
+        // Load plan limits from config
+        const { PLAN_CONFIG } = require('../config/plans.config');
+        const planLimits = PLAN_CONFIG.plans[org?.plan || 'free'];
+
+        // Check if plan has admin limit (Pro plan)
+        if (planLimits?.features?.admin_members && planLimits.features.admin_members !== -1) {
+          // Count current admins (excluding target user if they're already admin)
+          const { count: adminCount } = await supabaseAdmin
+            .from('organization_members')
+            .select('id', { count: 'exact', head: true })
+            .eq('organization_id', organizationId)
+            .eq('role', 'admin');
+
+          if (adminCount >= planLimits.features.admin_members) {
+            throw new Error(`Admin limit reached. Your plan allows ${planLimits.features.admin_members} admin(s). You currently have ${adminCount} admin(s).`);
+          }
+
+          console.log(`✅ Admin limit check passed: ${adminCount}/${planLimits.features.admin_members}`);
+        }
+      }
+
       // Update role in organization_members table
       const { data, error } = await supabaseAdmin
         .from('organization_members')

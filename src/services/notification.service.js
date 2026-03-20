@@ -12,13 +12,24 @@ const notificationService = {
    */
   async queueNotification(postId, oldStatus, newStatus) {
     try {
+      console.log('\n╔══════════════════════════════════════════════════════════════════╗');
+      console.log('║  🔔 [DEBUG] queueNotification - Post status changed             ║');
+      console.log('╚══════════════════════════════════════════════════════════════════╝');
+      console.log('   Post ID:', postId);
+      console.log('   Old Status:', oldStatus);
+      console.log('   New Status:', newStatus);
+      console.log('   Timestamp:', new Date().toISOString());
+      
       // Only queue if status changed to 'completed'
       if (newStatus !== 'completed' || oldStatus === 'completed') {
+        console.log('   ❌ Status not eligible for notification (not a new completion)');
+        console.log('══════════════════════════════════════════════════════════════════\n');
         return { success: false, message: 'Status not eligible for notification' };
       }
 
       // Schedule notification for 10 minutes from now (batching window)
       const scheduledFor = new Date(Date.now() + 10 * 60 * 1000);
+      console.log('   ⏰ Scheduling notification for:', scheduledFor.toISOString());
 
       const { data, error } = await supabaseAdmin
         .from('notification_queue')
@@ -32,11 +43,14 @@ const notificationService = {
         .single();
 
       if (error) {
-        console.error('Error queueing notification:', error);
+        console.error('   ❌ Error queueing notification:', error);
+        console.log('══════════════════════════════════════════════════════════════════\n');
         return { success: false, error: error.message };
       }
 
-      console.log(`✅ Notification queued for post ${postId}, scheduled for ${scheduledFor.toISOString()}`);
+      console.log('   ✅ Notification queued successfully!');
+      console.log('   Queue Entry ID:', data.id);
+      console.log('══════════════════════════════════════════════════════════════════\n');
       return { success: true, data };
     } catch (error) {
       console.error('Error in queueNotification:', error);
@@ -50,14 +64,30 @@ const notificationService = {
    */
   async getInterestedUsers(postId) {
     try {
+      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('🔍 [DEBUG] getInterestedUsers called');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('   Post ID:', postId);
+      console.log('   Calling RPC: get_interested_users_for_post...');
+      
       const { data, error } = await supabaseAdmin.rpc('get_interested_users_for_post', {
         p_post_id: postId
       });
 
       if (error) {
-        console.error('Error getting interested users:', error);
+        console.error('   ❌ RPC Error:', error);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
         return [];
       }
+
+      console.log('   ✅ RPC returned', (data || []).length, 'interested users:');
+      (data || []).forEach((user, index) => {
+        console.log(`   [${index + 1}] Email: ${user.email}`);
+        console.log(`       User ID: ${user.user_id || 'N/A (tracked user)'}`);
+        console.log(`       Tracking Code: ${user.tracking_code || 'N/A'}`);
+        console.log(`       Reasons: ${JSON.stringify(user.reasons)}`);
+      });
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
       return data || [];
     } catch (error) {
@@ -175,35 +205,64 @@ const notificationService = {
    * @returns {Object} - { 'email@example.com': { posts: [], reasons: {} } }
    */
   async groupPostsByUser(posts) {
+    console.log('\n╔══════════════════════════════════════════════════════════════════╗');
+    console.log('║  🔍 [DEBUG] groupPostsByUser - Starting user filtering          ║');
+    console.log('╚══════════════════════════════════════════════════════════════════╝');
+    console.log('   Total posts to process:', posts.length);
+    posts.forEach((p, i) => console.log(`   [${i + 1}] Post: "${p.title}" (ID: ${p.id})`));
+    
     const userPostsMap = {};
 
     for (const post of posts) {
+      console.log('\n┌──────────────────────────────────────────────────────────────────┐');
+      console.log(`│  Processing Post: "${post.title}"`);
+      console.log(`│  Post ID: ${post.id}`);
+      console.log('└──────────────────────────────────────────────────────────────────┘');
+      
       // Get all interested users for this post
       const interestedUsers = await this.getInterestedUsers(post.id);
+      
+      console.log(`\n   📋 Processing ${interestedUsers.length} interested users for this post...`);
 
       for (const user of interestedUsers) {
         const { email, user_id, tracking_code, reasons } = user;
+        
+        console.log(`\n   ┌─ User: ${email} ─────────────────────────`);
+        console.log(`   │  User ID: ${user_id || 'N/A'}`);
+        console.log(`   │  Tracking Code: ${tracking_code || 'N/A'}`);
+        console.log(`   │  Reasons: ${JSON.stringify(reasons)}`);
 
         // Check if already notified
+        console.log(`   │  ⏳ Checking if already notified...`);
         const alreadyNotified = await this.hasBeenNotified(post.id, email);
         if (alreadyNotified) {
-          console.log(`⏭️  User ${email} already notified for post ${post.id}`);
+          console.log(`   │  ❌ SKIPPED: Already notified for this post`);
+          console.log(`   └────────────────────────────────────────────`);
           continue;
         }
+        console.log(`   │  ✅ Not yet notified`);
 
         // Check preferences
+        console.log(`   │  ⏳ Checking notification preferences...`);
         const prefs = await this.getUserPreferences(email);
+        console.log(`   │     - unsubscribed_all: ${prefs.unsubscribed_all}`);
+        console.log(`   │     - notify_on_completion: ${prefs.notify_on_completion}`);
         if (prefs.unsubscribed_all || !prefs.notify_on_completion) {
-          console.log(`⏭️  User ${email} has disabled notifications`);
+          console.log(`   │  ❌ SKIPPED: User has disabled notifications`);
+          console.log(`   └────────────────────────────────────────────`);
           continue;
         }
+        console.log(`   │  ✅ Notifications enabled`);
 
         // Check access for private boards
+        console.log(`   │  ⏳ Checking board access (is_private: ${post.is_private})...`);
         const hasAccess = await this.canUserAccessPost(post, email, tracking_code);
         if (!hasAccess) {
-          console.log(`⏭️  User ${email} doesn't have access to post ${post.id}`);
+          console.log(`   │  ❌ SKIPPED: No access to this post/board`);
+          console.log(`   └────────────────────────────────────────────`);
           continue;
         }
+        console.log(`   │  ✅ Has access`);
 
         // Initialize user entry
         if (!userPostsMap[email]) {
@@ -219,8 +278,21 @@ const notificationService = {
         // Add post and reasons
         userPostsMap[email].posts.push(post);
         userPostsMap[email].reasonsMap[post.id] = reasons;
+        console.log(`   │  ✅ ADDED to notification list!`);
+        console.log(`   └────────────────────────────────────────────`);
       }
     }
+
+    const finalUsers = Object.keys(userPostsMap);
+    console.log('\n╔══════════════════════════════════════════════════════════════════╗');
+    console.log('║  📊 [DEBUG] groupPostsByUser - FINAL SUMMARY                    ║');
+    console.log('╚══════════════════════════════════════════════════════════════════╝');
+    console.log(`   Total users who will receive emails: ${finalUsers.length}`);
+    finalUsers.forEach(email => {
+      const userData = userPostsMap[email];
+      console.log(`   ✉️  ${email} → ${userData.posts.length} post(s)`);
+    });
+    console.log('══════════════════════════════════════════════════════════════════\n');
 
     return userPostsMap;
   },
@@ -277,11 +349,33 @@ const notificationService = {
             });
           } else {
             results.failed++;
+            
+            // Log failure to notification history
+            await this.logNotification({
+              postIds: posts.map(p => p.id),
+              recipientEmail: email,
+              recipientUserId: userId,
+              recipientTrackingCode: trackingCode,
+              engagementReasons: reasonsMap,
+              emailStatus: 'failed',
+              errorMessage: 'Email service returned failure'
+            });
           }
         })
         .catch((error) => {
           results.failed++;
           results.errors.push({ email, error: error.message });
+          
+          // Log error to notification history
+          this.logNotification({
+            postIds: posts.map(p => p.id),
+            recipientEmail: email,
+            recipientUserId: userId,
+            recipientTrackingCode: trackingCode,
+            engagementReasons: reasonsMap,
+            emailStatus: 'failed',
+            errorMessage: error.message
+          }).catch(err => console.error('Failed to log error:', err));
         });
 
       emailPromises.push(emailPromise);
@@ -298,9 +392,16 @@ const notificationService = {
    */
   async sendEmail(to, subject, html) {
     try {
-      await emailService.sendCompletionEmail(to, html, subject);
-      console.log(`✅ Email sent to ${to}`);
-      return true;
+      const result = await emailService.sendCompletionEmail(to, html, subject);
+      
+      // Check if email was actually sent
+      if (result && result.success) {
+        console.log(`✅ Email sent to ${to}`);
+        return true;
+      } else {
+        console.error(`❌ Failed to send email to ${to}:`, result?.error || 'Unknown error');
+        return false;
+      }
     } catch (error) {
       console.error(`❌ Failed to send email to ${to}:`, error);
       return false;

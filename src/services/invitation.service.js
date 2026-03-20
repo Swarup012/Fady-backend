@@ -6,6 +6,7 @@
 
 const crypto = require('crypto');
 const { supabaseAdmin } = require('../config/supabase.config');
+const emailService = require('./email.service');
 
 class InvitationService {
   /**
@@ -122,6 +123,22 @@ class InvitationService {
       }
 
       console.log(`✅ Invitation created for ${email} to join ${invitation.organization.name}`);
+      
+      // Send invitation email
+      try {
+        await emailService.sendInvitationEmail(
+          email,
+          token,
+          invitation.organization,
+          invitation.inviter.name,
+          role
+        );
+        console.log(`📧 Invitation email sent to ${email}`);
+      } catch (emailError) {
+        console.error('⚠️ Failed to send invitation email:', emailError);
+        // Don't throw - invitation is created, email sending is best effort
+      }
+      
       return invitation;
     } catch (error) {
       console.error('InvitationService.createInvitation error:', error);

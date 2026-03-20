@@ -2,7 +2,7 @@
 const express = require('express');
 const roadmapController = require('../controllers/roadmap.controller');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
-const { checkRoadmapLimit } = require('../middleware/plan-limits.middleware');
+const { checkRoadmapLimit, checkRoadmapItemLimit } = require('../middleware/plan-limits.middleware');
 
 const router = express.Router();
 
@@ -150,12 +150,12 @@ router.delete(
 // ADMIN & OWNER ROUTES
 // ============================================
 
-// Create roadmap item (Admin & Owner) - with roadmap limit check
+// Create roadmap item (Admin & Owner) - with roadmap item limit check
 router.post(
   '/boards/:boardSlug/roadmap',
   authenticate,
   authorize(['admin', 'owner']),
-  checkRoadmapLimit,
+  checkRoadmapItemLimit,
   roadmapController.createRoadmapItem
 );
 
