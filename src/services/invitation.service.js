@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const { supabaseAdmin } = require('../config/supabase.config');
 const emailService = require('./email.service');
+const cache = require('./redis.service');
 
 class InvitationService {
   /**
@@ -291,8 +292,11 @@ class InvitationService {
         // Don't throw - membership is created, just log the warning
       } else {
         console.log(`✅ Set organization ${invitation.organization_id} as current for user ${userId}`);
-        console.log(`🔄 Updated user timestamp to invalidate cached sessions`);
       }
+
+      // 🔴 Invalidate this user's cached sessions so next request gets fresh org data
+      await cache.invalidateUserSessions(userId);
+      console.log(`🗑️ Invalidated cached sessions for user ${userId} after invite acceptance`);
 
       console.log(`✅ User ${userEmail} accepted invitation to ${invitation.organization.name}`);
       return membership;

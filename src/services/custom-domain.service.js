@@ -1,4 +1,4 @@
-const { supabase } = require('../config/supabase.config');
+const { supabaseAdmin } = require('../config/supabase.config');
 const crypto = require('crypto');
 
 class CustomDomainService {
@@ -10,15 +10,66 @@ class CustomDomainService {
   }
 
   /**
+   * Check if organization can add custom domain
+   */
+  async canAddCustomDomain(organizationId) {
+    try {
+      // Get organization details
+      const { data: org, error: orgError } = await supabaseAdmin
+        .from('organizations')
+        .select('subscription_plan, subscription_status')
+        .eq('id', organizationId)
+        .single();
+
+      if (orgError || !org) {
+        console.error('Error fetching organization:', orgError);
+        return false;
+      }
+
+      // Check if on Pro plan
+      if (org.subscription_plan !== 'pro') {
+        console.log('Organization not on Pro plan:', org.subscription_plan);
+        return false;
+      }
+
+      // Check if subscription is active
+      if (org.subscription_status !== 'active' && org.subscription_status !== 'trialing') {
+        console.log('Subscription not active:', org.subscription_status);
+        return false;
+      }
+
+      // Check if already has a custom domain (limit 1)
+      const { data: existingDomains, error: domainError } = await supabaseAdmin
+        .from('custom_domains')
+        .select('id')
+        .eq('organization_id', organizationId)
+        .is('deleted_at', null);
+
+      if (domainError) {
+        console.error('Error checking existing domains:', domainError);
+        return false;
+      }
+
+      if (existingDomains && existingDomains.length >= 1) {
+        console.log('Organization already has custom domain(s):', existingDomains.length);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Error checking custom domain eligibility:', error);
+      return false;
+    }
+  }
+
+  /**
    * Add a new custom domain
    */
   async addCustomDomain(organizationId, domain) {
     try {
       // Check if organization can add custom domain (Pro plan, limit 1)
-      const { data: canAdd, error: checkError } = await supabase
-        .rpc('can_add_custom_domain', { org_id: organizationId });
+      const canAdd = await this.canAddCustomDomain(organizationId);
 
-      if (checkError) throw checkError;
       if (!canAdd) {
         throw new Error('Cannot add custom domain. Upgrade to Pro plan or remove existing domain.');
       }
@@ -29,7 +80,7 @@ class CustomDomainService {
       }
 
       // Check if domain already exists
-      const { data: existing } = await supabase
+      const { data: existing } = await supabaseAdmin
         .from('custom_domains')
         .select('id')
         .eq('domain', domain)
@@ -43,7 +94,7 @@ class CustomDomainService {
       const verificationToken = this.generateVerificationToken();
 
       // Insert custom domain
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from('custom_domains')
         .insert({
           organization_id: organizationId,
@@ -73,7 +124,7 @@ class CustomDomainService {
    * Get custom domain by ID
    */
   async getCustomDomain(domainId, organizationId) {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('custom_domains')
       .select('*')
       .eq('id', domainId)
@@ -88,7 +139,7 @@ class CustomDomainService {
    * Get custom domain for organization
    */
   async getOrganizationDomain(organizationId) {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('custom_domains')
       .select('*')
       .eq('organization_id', organizationId)
@@ -111,7 +162,7 @@ class CustomDomainService {
       status: isVerified ? 'active' : 'pending'
     };
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('custom_domains')
       .update(updates)
       .eq('id', domainId)
@@ -131,7 +182,7 @@ class CustomDomainService {
       ...sslData
     };
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('custom_domains')
       .update(updates)
       .eq('id', domainId)
@@ -146,7 +197,7 @@ class CustomDomainService {
    * Delete custom domain (soft delete)
    */
   async deleteCustomDomain(domainId, organizationId) {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('custom_domains')
       .update({
         status: 'deleted',

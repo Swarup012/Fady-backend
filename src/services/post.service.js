@@ -1,5 +1,6 @@
 const { supabaseAdmin } = require("../config/supabase.config");
 const cache = require("./redis.service");
+const dashboardService = require("./dashboard.service");
 const { emitPostUpvoted, emitPostCreated, emitPostUpdated, emitPostDeleted, emitPostCommentCount } = require("../socket/handlers/post.handler");
 const { emitCommentNew, emitCommentUpdated, emitCommentDeleted, emitCommentLiked } = require("../socket/handlers/comment.handler");
 const {
@@ -284,6 +285,7 @@ class PostService {
       // � Invalidate organization posts cache (for admin dashboard)
       if (data.organization_id) {
         await cache.delete(`posts:org:${data.organization_id}:all`);
+        await dashboardService.invalidateCache(data.organization_id);
         console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
       }
       
@@ -352,6 +354,7 @@ class PostService {
       // 3. Invalidate organization posts cache (for admin dashboard)
       if (data.organization_id) {
         await cache.delete(`posts:org:${data.organization_id}:all`);
+        await dashboardService.invalidateCache(data.organization_id);
         console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
       }
 
@@ -406,13 +409,14 @@ class PostService {
 
       console.log(`✅ Post status updated: ${oldStatus} → ${newStatus}`);
       
-      // � Invalidate organization posts cache (for admin dashboard)
+      // 🗑️ Invalidate organization posts cache (for admin dashboard)
       if (data.organization_id) {
         await cache.delete(`posts:org:${data.organization_id}:all`);
+        await dashboardService.invalidateCache(data.organization_id);
         console.log(`🗑️  Organization posts cache invalidated: ${data.organization_id}`);
       }
       
-      // �📡 Emit real-time event to board viewers
+      // 📡 Emit real-time event to board viewers
       // Get board slug for the post
       const { data: postWithBoard } = await supabaseAdmin
         .from("posts")
@@ -480,6 +484,7 @@ class PostService {
       // 3. Invalidate organization posts cache (for admin dashboard)
       if (post.organization_id) {
         await cache.delete(`posts:org:${post.organization_id}:all`);
+        await dashboardService.invalidateCache(post.organization_id);
         console.log(`🗑️  Organization posts cache invalidated: ${post.organization_id}`);
       }
       
@@ -549,6 +554,7 @@ class PostService {
         // 🔴 Invalidate organization posts cache (upvote count changed)
         if (postWithBoard?.organization_id) {
           await cache.delete(`posts:org:${postWithBoard.organization_id}:all`);
+          await dashboardService.invalidateCache(postWithBoard.organization_id);
         }
         
         const boardSlug = postWithBoard?.board?.slug;
@@ -588,6 +594,7 @@ class PostService {
         // 🔴 Invalidate organization posts cache (upvote count changed)
         if (postWithBoard?.organization_id) {
           await cache.delete(`posts:org:${postWithBoard.organization_id}:all`);
+          await dashboardService.invalidateCache(postWithBoard.organization_id);
         }
         
         const boardSlug = postWithBoard?.board?.slug;

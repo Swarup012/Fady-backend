@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Feedy Widget</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    // Get API key and widget ID from URL
+    const apiKey = new URLSearchParams(window.location.search).get('apiKey');
+    const widgetId = new URLSearchParams(window.location.search).get('widgetId');
+    const BACKEND_API_URL = 'http://localhost:3000'; // In production, change to your backend URL
+
+    let config = null;
+    let feedback = [];
+    let currentUser = null;
+    let expandedItems = new Set();
+    let showCreateForm = false;
+
+    // Load widget config and feedback
+    async function loadWidget() {
+      if (!apiKey) {
+        console.error('❌ No API key provided');
+        renderError('No API key provided');
+        return;
+      }
+
+      try {
+        // Load config
+        const configResponse = await fetch(`${BACKEND_API_URL}/api/widget/config?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`);
+        const configData = await configResponse.json();
+
+        if (configData.success) {
+          config = configData.data;
+          // Notify parent that widget is ready
+          window.parent.postMessage({ type: 'READY' }, '*');
+        }
+
+        // Load feedback
+        const feedbackResponse = await fetch(`${BACKEND_API_URL}/api/widget/feedback?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`);
+        const feedbackData = await feedbackResponse.json();
+
+        if (feedbackData.success) {
+          feedback = feedbackData.data.feedback;
+        }
+
+        render();
+      } catch (error) {
+        console.error('❌ Failed to load widget:', error);
+        renderError('Failed to load widget');
+      }
+    }
+
+    // Identify user
+    async function identifyUser(user) {
+      try {
+        const response = await fetch(`${BACKEND_API_URL}/api/widget/identify?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(user),
+        });
+
+        const data = await response.json();
+        console.log('✅ User identified:', data);
+
+        // Store the user data - we need the external user ID (from parent app) for creating feedback
+        currentUser = user;
+      } catch (error) {
+        console.error('❌ Failed to identify user:', error);
+      }
+    }
+
+    // Create feedback
+    async function createFeedback(title, description) {
+      console.log('📝 Creating feedback:', { title, description, currentUser });
+
+      if (!currentUser || !currentUser.id) {
+        console.error('❌ No user identified yet, cannot create feedback');
+        alert('Please wait for user identification to complete');
+        return;
+      }
+
+      try {
+        const response = await fetch(`${BACKEND_API_URL}/api/widget/feedback?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            title,
+            description,
+            external_user_id: currentUser.id, // Use the external user ID from parent app
+          }),
+        });
+
+        const data = await response.json();
+        console.log('📝 Feedback response:', data);
+
+        if (data.success) {
+          // Reload feedback
+          await loadWidget();
+          // Reset form
+          showCreateForm = false;
+          render();
+          // Notify parent
+          window.parent.postMessage({
+            type: 'FEEDBACK_SUBMITTED',
+            data: data.data.feedback,
+          }, '*');
+        } else {
+          console.error('❌ Feedback creation failed:', data);
+          alert('Failed to create feedback: ' + (data.error || 'Unknown error'));
+        }
+      } catch (error) {
+        console.error('❌ Failed to create feedback:', error);
+        alert('Failed to create feedback');
+      }
+    }
+
+    // Vote on feedback
+    async function vote(feedbackId) {
+      if (!currentUser?.id) {
+        alert('Please identify yourself first');
+        return;
+      }
+
+      try {
+        const response = await fetch(`${BACKEND_API_URL}/api/widget/vote?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            feedback_id: feedbackId,
+            external_user_id: currentUser.id,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          // Reload feedback
+          await loadWidget();
+        }
+      } catch (error) {
+        console.error('❌ Failed to vote:', error);
+      }
+    }
+
+    // Toggle expand
+    function toggleExpand(id) {
+      if (expandedItems.has(id)) {
+        expandedItems.delete(id);
+      } else {
+        expandedItems.add(id);
+      }
+      render();
+    }
+
+    // Get status color
+    function getStatusColor(status) {
+      switch (status) {
+        case 'backlog':
+          return 'bg-gray-100 text-gray-800';
+        case 'in-progress':
+          return 'bg-blue-100 text-blue-800';
+        case 'completed':
+          return 'bg-green-100 text-green-800';
+        default:
+          return 'bg-gray-100 text-gray-800';
+      }
+    }
+
+    // Render error
+    function renderError(message) {
+      document.getElementById('root').innerHTML = `
+        <div class="flex items-center justify-center h-screen bg-white">
+          <div class="text-center">
+            <p class="text-red-600">${message}</p>
+          </div>
+        </div>
+      `;
+    }
+
+    // Render widget
+    function render() {
+      const primaryColor = config?.widget.branding.primaryColor || '#3b82f6';
+
+      let html = `
+        <div class="h-screen bg-white flex flex-col">
+          <!-- Header -->
+          <div class="p-4 border-b flex items-center justify-between" style="background-color: ${primaryColor}">
+            <div class="flex items-center gap-2">
+              ${config?.board?.icon ? `<span class="text-2xl">${config.board.icon}</span>` : ''}
+              <h1 class="text-white font-semibold text-lg">${config?.board?.name || 'Feedback'}</h1>
+            </div>
+            <button onclick="window.parent.postMessage({type: 'CLOSE'}, '*')" class="text-white hover:bg-white/20 p-2 rounded">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6L6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Content -->
+          <div class="flex-1 p-4 overflow-y-auto" style="max-height: calc(100vh - 60px);">
+            <!-- Create Button -->
+            <button onclick="showCreateForm = true; render();" class="w-full mb-4 px-4 py-2 rounded text-white font-medium" style="background-color: ${primaryColor}">
+              <span class="flex items-center justify-center gap-2">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+                Add Feedback
+              </span>
+            </button>
+
+            ${showCreateForm ? `
+              <!-- Create Form -->
+              <div class="mb-4 p-4 border rounded-lg">
+                <input type="text" id="feedback-title" placeholder="What would you like to see?" class="w-full mb-3 px-3 py-2 border rounded" value="">
+                <textarea id="feedback-description" placeholder="Describe your idea in more detail..." class="w-full mb-3 px-3 py-2 border rounded min-h-[80px]"></textarea>
+                <div class="flex gap-2">
+                  <button onclick="createFeedback(document.getElementById('feedback-title').value, document.getElementById('feedback-description').value)" class="flex-1 px-4 py-2 rounded text-white" style="background-color: ${primaryColor}">
+                    Submit
+                  </button>
+                  <button onclick="showCreateForm = false; render();" class="px-4 py-2 border rounded">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ` : ''}
+
+            <!-- Feedback List -->
+            <div class="space-y-3">
+              ${feedback.length === 0 ? `
+                <div class="text-center py-8 text-gray-500">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mx-auto mb-2 opacity-50">
+                    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                  </svg>
+                  <p>No feedback yet. Be the first to share your ideas!</p>
+                </div>
+              ` : feedback.map(item => `
+                <div class="p-4 border rounded-lg hover:shadow-md transition-shadow">
+                  <div class="flex items-start gap-3">
+                    <!-- Vote Button -->
+                    ${config?.widget.settings.show_voting ? `
+                      <button onclick="vote('${item.id}')" class="flex-shrink-0 px-3 py-1 border rounded flex items-center gap-1 ${item.voted ? 'bg-blue-50 border-blue-500' : ''}">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+                        </svg>
+                        ${item.vote_count}
+                      </button>
+                    ` : ''}
+
+                    <!-- Content -->
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-start justify-between gap-2">
+                        <h3 class="font-medium text-sm">${item.title}</h3>
+                        <span class="px-2 py-1 rounded text-xs ${getStatusColor(item.status)}">${item.status}</span>
+                      </div>
+
+                      ${expandedItems.has(item.id) && item.description ? `
+                        <p class="text-sm text-gray-600 mt-2">${item.description}</p>
+                      ` : ''}
+
+                      ${item.description ? `
+                        <button onclick="toggleExpand('${item.id}')" class="mt-2 text-xs text-gray-500 hover:text-gray-700">
+                          ${expandedItems.has(item.id) ? 'Show less' : 'Show more'}
+                        </button>
+                      ` : ''}
+
+                      <div class="flex items-center gap-2 mt-2 text-xs text-gray-500">
+                        <span>${item.user.name || 'Anonymous'}</span>
+                        <span>•</span>
+                        <span>${new Date(item.created_at).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('root').innerHTML = html;
+    }
+
+    // Listen for messages from parent
+    window.addEventListener('message', (event) => {
+      console.log('📩 Widget received message:', event.data.type, event.data.data);
+
+      if (event.data.type === 'IDENTIFY') {
+        console.log('👤 User identified:', event.data.data);
+        identifyUser(event.data.data);
+      } else if (event.data.type === 'OPEN') {
+        console.log('📖 Widget opened');
+      } else if (event.data.type === 'CLOSE') {
+        console.log('📕 Widget closed');
+      }
+    });
+
+    // Load widget on page load
+    loadWidget();
+
+    // Notify parent that widget is ready
+    window.parent.postMessage({ type: 'READY' }, '*');
+    console.log('✅ Widget page loaded and ready');
+  </script>
+</body>
+</html>

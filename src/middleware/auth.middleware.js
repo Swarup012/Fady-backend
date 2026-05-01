@@ -24,51 +24,35 @@ const authenticate = async (req, res, next) => {
     const crypto = require('crypto');
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex').substring(0, 32);
     const sessionCacheKey = `user:session:${tokenHash}`;
-    
-    // 🐛 DEBUG: Log token info
-    console.log('🔑 DEBUG - Auth Middleware:', {
-      tokenHash: tokenHash,
-      cacheKey: sessionCacheKey,
-      fullToken: token.substring(0, 50) + '...',
-    });
-    
-    // 🔧 DISABLED: Cache temporarily disabled to fix stale org data after invite acceptance
-    const cachedSession = null; // await cache.get(sessionCacheKey);
+
+    const cachedSession = await cache.get(sessionCacheKey);
     if (cachedSession) {
-      console.log(`🔴 Session cache HIT for user: ${cachedSession.email}`);
-      console.log('🐛 DEBUG - Cached Session:', {
-        email: cachedSession.email,
-        userId: cachedSession.id,
-        orgRole: cachedSession.organization_role,
-      });
       req.user = cachedSession;
       req.token = token;
       return next();
     }
 
-    console.log(`❌ Session cache MISS - fetching from database`);
-
     let userId;
-    
+
     // Try to verify as Supabase token first
     const { data: { user }, error } = await supabase.auth.getUser(token);
 
     if (error || !user) {
       // If Supabase verification fails, try to verify as custom JWT (from Google OAuth)
-      console.log('⚠️ Supabase token verification failed, trying custom JWT...');
-      
       try {
         const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+        if (!process.env.JWT_SECRET) {
+          console.error('❌ JWT_SECRET not configured — rejecting custom JWT');
+          return ResponseUtil.error(res, 'Server authentication configuration error', 500);
+        }
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
         userId = decoded.userId;
-        console.log('✅ Custom JWT verified for user:', userId);
       } catch (jwtError) {
         console.error('❌ Custom JWT verification failed:', jwtError.message);
         return ResponseUtil.error(res, 'Invalid or expired token', 401);
       }
     } else {
       userId = user.id;
-      console.log('✅ Supabase token verified for user:', userId);
     }
 
     // Get user profile from database (use supabaseAdmin to bypass RLS)
@@ -82,11 +66,6 @@ const authenticate = async (req, res, next) => {
       return ResponseUtil.error(res, 'User profile not found', 404);
     }
 
-    console.log('🔍 Middleware - User profile:', {
-      email: profile.email,
-      current_org_id: profile.current_organization_id
-    });
-
     // Get organization role and job_role from organization_members table
     let membership = null;
     
@@ -99,19 +78,11 @@ const authenticate = async (req, res, next) => {
         .eq('organization_id', profile.current_organization_id)
         .single();
       
-      console.log('🔍 Middleware - Membership query for current org:', {
-        found: !!currentMembership,
-        role: currentMembership?.role,
-        job_role: currentMembership?.job_role,
-        error: membershipError?.message
-      });
-      
       membership = currentMembership;
     }
     
     // Fallback: If no current_organization_id or membership not found, get first organization
     if (!membership) {
-      console.log('⚠️ Middleware - No current org, searching for any membership...');
       const { data: anyMembership } = await supabaseAdmin
         .from('organization_members')
         .select('role, job_role, organization_id')
@@ -128,7 +99,6 @@ const authenticate = async (req, res, next) => {
           .eq('id', profile.id);
         
         profile.current_organization_id = anyMembership.organization_id;
-        console.log('✅ Middleware - Auto-set current_organization_id to:', anyMembership.organization_id);
       }
     }
     
@@ -137,27 +107,18 @@ const authenticate = async (req, res, next) => {
       profile.organization_role = membership.role;
       profile.job_role = membership.job_role;
       profile.organization_id = membership.organization_id;
-      console.log('✅ Middleware - Final org context:', {
-        organization_id: membership.organization_id,
-        organization_role: membership.role,
-        job_role: membership.job_role
-      });
-    } else {
-      console.log('❌ Middleware - No membership found for user');
     }
-    
-    console.log('📤 Middleware - Final profile.organization_role:', profile.organization_role);
 
     // 🔴 CACHE: Store user session in cache (TTL: 30 minutes = 1800 seconds)
     await cache.set(sessionCacheKey, profile, 1800);
-    console.log(`✅ Session cached for user: ${profile.email}`);
-    console.log('🐛 DEBUG - Caching Session:', {
-      email: profile.email,
-      userId: profile.id,
-      tokenHash: tokenHash,
-      cacheKey: sessionCacheKey,
-      orgRole: profile.organization_role,
-    });
+    
+    // Track which cache keys belong to this user (for targeted invalidation on invite/org change)
+    const userSessionsKey = `user:sessions:${profile.id}`;
+    const existingKeys = (await cache.get(userSessionsKey)) || [];
+    if (!existingKeys.includes(sessionCacheKey)) {
+      existingKeys.push(sessionCacheKey);
+      await cache.set(userSessionsKey, existingKeys, 86400); // 24h TTL for the key list
+    }
 
     // Attach user and token to request
     req.user = profile;
@@ -188,12 +149,8 @@ const optionalAuthenticate = async (req, res, next) => {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex').substring(0, 32);
     const sessionCacheKey = `user:session:${tokenHash}`;
     
-    console.log('🔑 DEBUG - Optional Auth:', { tokenHash, cacheKey: sessionCacheKey });
-    
     const cachedSession = await cache.get(sessionCacheKey);
     if (cachedSession) {
-      console.log(`🔴 Optional session cache HIT for user: ${cachedSession.email}`);
-      console.log('🐛 DEBUG - Optional Cached User:', { email: cachedSession.email, userId: cachedSession.id });
       req.user = cachedSession;
       req.token = token;
       return next();
@@ -237,7 +194,14 @@ const optionalAuthenticate = async (req, res, next) => {
 
     // 🔴 CACHE: Store user session in cache (TTL: 30 minutes)
     await cache.set(sessionCacheKey, profile, 1800);
-    console.log(`✅ Optional session cached for user: ${profile.email}`);
+    
+    // Track which cache keys belong to this user (for targeted invalidation)
+    const userSessionsKey = `user:sessions:${profile.id}`;
+    const existingKeys = (await cache.get(userSessionsKey)) || [];
+    if (!existingKeys.includes(sessionCacheKey)) {
+      existingKeys.push(sessionCacheKey);
+      await cache.set(userSessionsKey, existingKeys, 86400);
+    }
 
     req.user = profile;
     req.token = token;

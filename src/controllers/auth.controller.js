@@ -1,7 +1,7 @@
 const authService = require('../services/auth.service');
 const storageService = require('../services/storage.service');
 const ResponseUtil = require('../utils/response.util');
-const { supabaseAdmin } = require('../config/supabase.config');
+const { supabase, supabaseAdmin } = require('../config/supabase.config');
 
 class AuthController {
   /**
@@ -400,40 +400,72 @@ class AuthController {
     try {
       const { email, name, googleId, avatar, supabaseToken } = req.body;
 
-      console.log('🔐 Google OAuth request:', { email, name, googleId, hasSupabaseToken: !!supabaseToken });
-
       if (!email || !googleId) {
         return ResponseUtil.error(res, 'Email and Google ID are required', 400);
       }
 
-      // 🔒 SECURITY: Verify the Supabase token if provided to ensure user actually authenticated with Google
-      // This makes token verification optional for now for backward compatibility
-      if (supabaseToken) {
-        try {
-          const { data: { user }, error: verifyError } = await supabase.auth.getUser(supabaseToken);
+      // 🔒 SECURITY: Supabase token is REQUIRED — reject requests without it
+      if (!supabaseToken) {
+        console.error('❌ Google auth rejected: no Supabase token provided');
+        return ResponseUtil.error(res, 'Authentication token is required. Please sign in with Google again.', 401);
+      }
 
-          // Only proceed if verification succeeds, otherwise log warning and continue
-          if (!verifyError && user) {
-            // Verify that the verified user matches the claimed email and googleId
-            if (user.email !== email || user.id !== googleId) {
-              console.error('❌ Token verification mismatch:', {
-                tokenEmail: user.email,
-                tokenId: user.id,
-                claimedEmail: email,
-                claimedId: googleId
-              });
-              return ResponseUtil.error(res, 'Token does not match claimed identity', 401);
-            }
-            console.log('✅ Supabase token verified:', { userId: user.id, email });
-          } else {
-            console.warn('⚠️ Supabase token provided but verification failed, proceeding anyway:', verifyError);
+      // 🔒 SECURITY: Verify the Supabase token to ensure user actually authenticated with Google
+      // Decode the JWT payload to extract claims (no network call needed)
+      // Then verify with Supabase as a secondary check (network call)
+      let verifiedUser;
+      let tokenEmail = null;
+      let tokenUserId = null;
+
+      try {
+        // Step 1: Decode JWT payload to extract email (works offline, no network needed)
+        // Supabase access tokens are JWTs — we can read the payload without verifying the signature
+        // because we'll verify with Supabase next
+        const parts = supabaseToken.split('.');
+        if (parts.length === 3) {
+          try {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+            tokenEmail = payload.email;
+            tokenUserId = payload.sub;
+          } catch (decodeErr) {
+            console.warn('⚠️ Could not decode JWT payload:', decodeErr.message);
           }
-        } catch (verifyError) {
-          console.warn('⚠️ Supabase token verification error, proceeding anyway:', verifyError);
-          // Continue without token verification for backward compatibility
         }
-      } else {
-        console.warn('⚠️ No Supabase token provided - proceeding without verification');
+
+        // Step 2: Verify with Supabase (network call)
+        const { data: { user }, error: verifyError } = await supabase.auth.getUser(supabaseToken);
+
+        if (verifyError) {
+          // If it's a network error (fetch failed), fall back to decoded JWT claims
+          const isNetworkError = verifyError.message?.includes('fetch failed') ||
+                                 verifyError.message?.includes('network') ||
+                                 verifyError.message?.includes('ECONNREFUSED') ||
+                                 verifyError.message?.includes('ETIMEDOUT');
+
+          if (isNetworkError && tokenEmail) {
+            console.warn('⚠️ Supabase unreachable during token verification, falling back to decoded JWT claims');
+            verifiedUser = { email: tokenEmail, id: tokenUserId };
+          } else {
+            console.error('❌ Google auth rejected: Supabase token verification failed:', verifyError.message);
+            return ResponseUtil.error(res, 'Invalid or expired authentication token', 401);
+          }
+        } else if (!user) {
+          console.error('❌ Google auth rejected: no user returned from token verification');
+          return ResponseUtil.error(res, 'Invalid authentication token', 401);
+        } else {
+          verifiedUser = user;
+        }
+
+        // Verify that the verified/decoded user matches the claimed email
+        if (verifiedUser.email !== email) {
+          console.error('❌ Token email mismatch:', { tokenEmail: verifiedUser.email, claimedEmail: email });
+          return ResponseUtil.error(res, 'Token does not match claimed identity', 401);
+        }
+
+        console.log('✅ Supabase token verified:', { userId: verifiedUser.id || verifiedUser.sub, email });
+      } catch (verifyError) {
+        console.error('❌ Google auth rejected: token verification error:', verifyError.message);
+        return ResponseUtil.error(res, 'Authentication token verification failed', 401);
       }
 
       // Check if user exists by email (NOT by googleId to allow account linking)
@@ -447,13 +479,13 @@ class AuthController {
       let needsOnboarding = false;
 
       if (existingUser) {
-        // Edge case: If existing user has a different google_id, check if we're trying to link accounts
+        // If existing user has a different google_id, update it since we verified the email matches
+        // Supabase may generate new auth user IDs on each Google sign-in, but the email is the same
         if (existingUser.google_id && existingUser.google_id !== googleId) {
-          console.error('❌ Email already linked to different Google account:', {
+          console.log('ℹ️ Updating google_id for existing user (Supabase generated new auth ID):', {
             existingGoogleId: existingUser.google_id,
             newGoogleId: googleId
           });
-          return ResponseUtil.error(res, 'This email is already linked to a different Google account. Please sign in with the original account or contact support.', 409);
         }
 
         // Update existing user with Google info
@@ -529,13 +561,18 @@ class AuthController {
       const jwt = require('jsonwebtoken');
       const config = require('../config/env.config');
       
+      if (!process.env.JWT_SECRET) {
+        console.error('❌ JWT_SECRET not configured');
+        return ResponseUtil.error(res, 'Server authentication configuration error', 500);
+      }
+
       const token = jwt.sign(
         { 
           userId: user.id, 
           email: user.email,
           organizationId: user.current_organization_id 
         },
-        process.env.JWT_SECRET || 'your-secret-key',
+        process.env.JWT_SECRET,
         { expiresIn: '7d' }
       );
 

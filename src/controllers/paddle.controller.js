@@ -116,15 +116,24 @@ async function createCheckoutSession(req, res) {
     let paddlePlanId = null;
     if (plan === 'starter') {
       if (billingCycle === 'yearly') {
-        paddlePlanId = process.env.PADDLE_STARTER_PLAN_ID_YEARLY;
+        // Use no-trial price if skipTrial is true
+        paddlePlanId = skipTrial
+          ? process.env.PADDLE_STARTER_PLAN_ID_YEARLY_NO_TRIAL
+          : process.env.PADDLE_STARTER_PLAN_ID_YEARLY;
       } else {
-        paddlePlanId = process.env.PADDLE_STARTER_PLAN_ID_MONTHLY;
+        paddlePlanId = skipTrial
+          ? process.env.PADDLE_STARTER_PLAN_ID_MONTHLY_NO_TRIAL
+          : process.env.PADDLE_STARTER_PLAN_ID_MONTHLY;
       }
     } else if (plan === 'pro') {
       if (billingCycle === 'yearly') {
-        paddlePlanId = process.env.PADDLE_PRO_PLAN_ID_YEARLY;
+        paddlePlanId = skipTrial
+          ? process.env.PADDLE_PRO_PLAN_ID_YEARLY_NO_TRIAL
+          : process.env.PADDLE_PRO_PLAN_ID_YEARLY;
       } else {
-        paddlePlanId = process.env.PADDLE_PRO_PLAN_ID_MONTHLY;
+        paddlePlanId = skipTrial
+          ? process.env.PADDLE_PRO_PLAN_ID_MONTHLY_NO_TRIAL
+          : process.env.PADDLE_PRO_PLAN_ID_MONTHLY;
       }
     }
     
@@ -132,14 +141,15 @@ async function createCheckoutSession(req, res) {
       return responseUtil.error(res, 'Invalid plan or billing cycle for Paddle', 400);
     }
     
-    console.log('🔍 Creating Paddle checkout', { organizationId, plan, billingCycle, paddlePlanId });
-    
+    console.log('🔍 Creating Paddle checkout', { organizationId, plan, billingCycle, paddlePlanId, skipTrial });
+
     const paddleCheckout = await paddleService.createCheckoutLink(
       organizationId,
       userEmail,
       paddlePlanId,
       successUrl || `${process.env.FRONTEND_URL}/admin?checkout=success`,
-      cancelUrl || `${process.env.FRONTEND_URL}/pricing?checkout=cancelled`
+      cancelUrl || `${process.env.FRONTEND_URL}/pricing?checkout=cancelled`,
+      skipTrial  // Pass skipTrial to service
     );
     
     // Set billing_provider to 'paddle' in DB
@@ -168,7 +178,7 @@ async function createCheckoutSession(req, res) {
 async function getInvoices(req, res) {
   try {
     const organizationId = req.user.current_organization_id || req.organization?.id;
-    const limit = parseInt(req.query.limit) || 10;
+    const limit = parseInt(req.query.limit) || 1; // Default to 1 (last transaction only)
 
     if (!organizationId) {
       return responseUtil.error(res, 'No organization context found', 400);
@@ -202,7 +212,8 @@ async function getInvoices(req, res) {
         params: {
           customer_id: org.paddle_customer_id,
           per_page: limit,
-          status: 'paid,completed'
+          status: 'paid,completed',
+          type: 'payment' // Only show actual payments, not authorizations or other transaction types
         },
         headers: {
           'Authorization': `Bearer ${PADDLE_API_KEY}`,
@@ -211,16 +222,44 @@ async function getInvoices(req, res) {
       }
     );
 
+    console.log(`📄 Fetched ${response.data.data.length} transactions from Paddle`);
+
     // Format invoices for frontend
-    const formattedInvoices = response.data.data.map(transaction => ({
-      id: transaction.id,
-      date: new Date(transaction.created_at),
-      amount: parseFloat(transaction.details.totals.total) / 100,
-      currency: transaction.currency_code,
-      status: transaction.status,
-      invoiceUrl: transaction.invoice_url || null,
-      receiptUrl: transaction.receipt_url || null,
-    }));
+    const formattedInvoices = response.data.data
+      .filter(transaction => {
+        // Filter out test transactions (in sandbox mode)
+        // Test transactions often have specific IDs or metadata
+        const isTest = transaction.id.includes('test') || transaction.mode === 'test';
+
+        // Filter out $0 transactions (trial starts, subscription events)
+        const isZeroAmount = parseFloat(transaction.details.totals.total) === 0;
+
+        if (isTest) {
+          console.log(`⚠️ Filtering out test transaction: ${transaction.id}`);
+        }
+        if (isZeroAmount) {
+          console.log(`⚠️ Filtering out $0 transaction: ${transaction.id}`);
+        }
+
+        return !isTest && !isZeroAmount;
+      })
+      .map(transaction => {
+        // Use our backend proxy endpoint for invoice download
+        const invoiceUrl = `${process.env.API_URL || 'http://localhost:3000'}/api/paddle/invoices/${transaction.id}/download`;
+
+        return {
+          id: transaction.id,
+          date: new Date(transaction.created_at),
+          amount: parseFloat(transaction.details.totals.total) / 100, // Paddle returns cents, convert to dollars
+          currency: transaction.currency_code,
+          status: transaction.status,
+          invoiceUrl: invoiceUrl,
+          receiptUrl: null, // Paddle doesn't provide separate receipt URL
+          hasInvoice: true, // Assume invoice is available (will be verified on download)
+        };
+      });
+
+    console.log(`📄 Returning ${formattedInvoices.length} filtered invoices`);
 
     return responseUtil.success(res, 'Invoices retrieved', {
       invoices: formattedInvoices,
@@ -235,6 +274,126 @@ async function getInvoices(req, res) {
     }
     
     return responseUtil.error(res, 'Failed to get invoices', 500);
+  }
+}
+
+/**
+ * Download Invoice PDF
+ */
+async function downloadInvoice(req, res) {
+  try {
+    const { transactionId } = req.params;
+
+    if (!transactionId) {
+      return responseUtil.error(res, 'Transaction ID is required', 400);
+    }
+
+    console.log('📄 Downloading invoice for transaction:', transactionId);
+
+    // Step 1: Get invoice URL from Paddle API
+    const paddleResponse = await axios.get(
+      `${PADDLE_API_URL}/transactions/${transactionId}/invoice`,
+      {
+        headers: {
+          'Authorization': `Bearer ${PADDLE_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    console.log('📄 Paddle response status:', paddleResponse.status);
+
+    // Extract the invoice URL from Paddle's response
+    const invoiceUrl = paddleResponse.data?.data?.url;
+
+    if (!invoiceUrl) {
+      console.error('❌ No invoice URL in Paddle response:', paddleResponse.data);
+      return responseUtil.error(res, 'Invoice URL not found in Paddle response', 404);
+    }
+
+    console.log('📄 Invoice URL obtained:', invoiceUrl);
+
+    // Step 2: Fetch the actual PDF from the S3 URL with retry logic
+    let pdfResponse;
+    let lastError;
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2 seconds
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`📄 Attempt ${attempt}/${maxRetries} to fetch PDF from S3...`);
+        pdfResponse = await axios.get(invoiceUrl, {
+          responseType: 'arraybuffer',
+          timeout: 60000, // 60 second timeout
+          maxContentLength: 10 * 1024 * 1024, // 10MB max
+        });
+        console.log('✅ PDF fetched successfully on attempt', attempt);
+        break; // Success, exit retry loop
+      } catch (error) {
+        lastError = error;
+        console.error(`❌ Attempt ${attempt} failed:`, error.message);
+
+        if (attempt < maxRetries) {
+          console.log(`⏳ Retrying in ${retryDelay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
+      }
+    }
+
+    if (!pdfResponse) {
+      console.error('❌ All retry attempts failed');
+      throw lastError || new Error('Failed to fetch PDF after multiple attempts');
+    }
+
+    console.log('📄 PDF fetched, size:', pdfResponse.data?.length, 'bytes');
+    console.log('📄 PDF Content-Type:', pdfResponse.headers['content-type']);
+
+    // Check if we got actual PDF data
+    if (!pdfResponse.data || pdfResponse.data.length === 0) {
+      console.error('❌ No PDF data received from S3');
+      return responseUtil.error(res, 'No PDF data received', 500);
+    }
+
+    // Get content type from response
+    const contentType = pdfResponse.headers['content-type'] || 'application/pdf';
+
+    // Set headers for file download
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="invoice-${transactionId}.pdf"`);
+    res.setHeader('Content-Length', pdfResponse.data.length);
+
+    // Send the PDF data
+    console.log('✅ Sending PDF to client');
+    return res.send(pdfResponse.data);
+
+  } catch (error) {
+    console.error('❌ Error downloading invoice:', error.response?.data || error.message);
+
+    // Parse the error response if it's a buffer
+    let errorMessage = 'Failed to download invoice';
+    if (error.response?.data) {
+      try {
+        const errorData = JSON.parse(error.response.data.toString());
+        console.error('Paddle API error:', errorData);
+        if (errorData.error?.code === 'not_found') {
+          errorMessage = 'Invoice not available for this transaction. This may be a one-time payment or the invoice is not yet generated.';
+        } else if (errorData.error?.code === 'forbidden') {
+          errorMessage = 'Access denied to invoice. Please contact support.';
+        }
+      } catch (e) {
+        // If we can't parse the error, use the default message
+      }
+    }
+
+    if (error.response?.status === 404) {
+      return responseUtil.error(res, errorMessage, 404);
+    }
+
+    if (error.response?.status === 403) {
+      return responseUtil.error(res, errorMessage, 403);
+    }
+
+    return responseUtil.error(res, errorMessage, 500);
   }
 }
 
@@ -493,6 +652,7 @@ module.exports = {
   createCheckoutSession,
   getSubscription,
   getInvoices,
+  downloadInvoice,
   cancelSubscription,
   updateSubscriptionPlan
 };

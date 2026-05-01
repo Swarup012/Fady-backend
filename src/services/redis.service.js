@@ -271,6 +271,32 @@ class CacheService {
   }
 
   /**
+   * Invalidate all cached sessions for a specific user
+   * Uses the user:sessions:{userId} reverse index to find and delete
+   * only that user's session cache keys (not ALL sessions)
+   */
+  async invalidateUserSessions(userId) {
+    if (!this.enabled) return false;
+
+    try {
+      const userSessionsKey = `user:sessions:${userId}`;
+      const sessionKeys = await this.get(userSessionsKey);
+
+      if (sessionKeys && Array.isArray(sessionKeys) && sessionKeys.length > 0) {
+        await this.delete(...sessionKeys);
+        console.log(`🗑️ Invalidated ${sessionKeys.length} session(s) for user ${userId}`);
+      }
+
+      // Also delete the key list itself
+      await this.delete(userSessionsKey);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error invalidating sessions for user ${userId}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
    * Disable cache (useful for testing)
    */
   disable() {

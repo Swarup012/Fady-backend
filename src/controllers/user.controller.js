@@ -1,5 +1,6 @@
 const userService = require('../services/user.service');
 const responseUtil = require('../utils/response.util');
+const cache = require('../services/redis.service');
 
 const userController = {
   /**
@@ -29,6 +30,10 @@ const userController = {
       }
 
       const result = await userService.switchOrganization(userId, organizationId);
+
+      // Invalidate cached session so next request gets fresh org data
+      await cache.invalidateUserSessions(userId);
+
       return responseUtil.success(res, 'Switched organization successfully', result);
     } catch (error) {
       if (error.message.includes('not a member')) {
@@ -69,6 +74,10 @@ const userController = {
       });
 
       const result = await userService.completeOnboarding(userId, onboardingData);
+
+      // Invalidate cached session so next request gets fresh org data
+      await cache.invalidateUserSessions(userId);
+
       return responseUtil.success(res, 'Onboarding completed successfully', result);
     } catch (error) {
       console.error('❌ Onboarding completion error:', error);

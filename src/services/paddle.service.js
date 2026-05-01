@@ -16,32 +16,41 @@ const paddleService = {
    * Create Paddle Billing Checkout (NEW API)
    * Returns checkout URL for frontend redirect
    */
-  async createCheckoutLink(organizationId, userEmail, priceId, successUrl, cancelUrl) {
+  async createCheckoutLink(organizationId, userEmail, priceId, successUrl, cancelUrl, skipTrial = false) {
     try {
       console.log('🔵 Creating Paddle Billing checkout...', {
         priceId,
         userEmail,
         apiUrl: PADDLE_API_URL,
-        isSandbox: IS_SANDBOX
+        isSandbox: IS_SANDBOX,
+        skipTrial
       });
+
+      // Build transaction request body
+      const requestBody = {
+        items: [
+          {
+            price_id: priceId,
+            quantity: 1
+          }
+        ],
+        customer_email: userEmail,
+        custom_data: {
+          organization_id: organizationId
+        }
+      };
+
+      // If skipTrial is true, set trial_period to null to skip the trial
+      if (skipTrial) {
+        console.log('⚡ Skipping trial - setting trial_period to null');
+        requestBody.trial_period = null;
+      }
 
       // Create transaction using Paddle Billing API
       // Note: We don't set custom checkout URL to avoid domain approval requirement
       const response = await axios.post(
         `${PADDLE_API_URL}/transactions`,
-        {
-          items: [
-            {
-              price_id: priceId,
-              quantity: 1
-            }
-          ],
-          customer_email: userEmail,
-          custom_data: {
-            organization_id: organizationId
-          }
-          // No checkout URL specified - Paddle will use their default hosted page
-        },
+        requestBody,
         {
           headers: {
             'Authorization': `Bearer ${PADDLE_API_KEY}`,

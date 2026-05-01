@@ -269,6 +269,8 @@ const organizationService = {
             subdomain,
             logo_url,
             plan,
+            subscription_plan,
+            subscription_status,
             created_at
           )
         `)
@@ -406,19 +408,19 @@ const organizationService = {
    */
   async updateOrganization(organizationId, updates, userId) {
     try {
-      // Verify user is owner
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('organization_role')
-        .eq('id', userId)
+      // Verify user is a member of the organization
+      const { data: membership, error: memberError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('user_id', userId)
         .eq('organization_id', organizationId)
         .single();
 
-      if (userError || !user) {
+      if (memberError || !membership) {
         throw new Error('Unauthorized: User not in organization');
       }
 
-      if (user.organization_role !== 'owner') {
+      if (membership.role !== 'owner') {
         throw new Error('Unauthorized: Only organization owner can update settings');
       }
 
@@ -525,10 +527,10 @@ const organizationService = {
   async inviteUser(organizationId, email, role, invitedBy) {
     try {
       // Verify inviter is admin or owner
-      const { data: inviter, error: inviterError } = await supabase
-        .from('users')
-        .select('organization_role')
-        .eq('id', invitedBy)
+      const { data: inviter, error: inviterError } = await supabaseAdmin
+        .from('organization_members')
+        .select('role')
+        .eq('user_id', invitedBy)
         .eq('organization_id', organizationId)
         .single();
 
@@ -536,7 +538,7 @@ const organizationService = {
         throw new Error('Unauthorized: User not in organization');
       }
 
-      if (!['owner', 'admin'].includes(inviter.organization_role)) {
+      if (!['owner', 'admin'].includes(inviter.role)) {
         throw new Error('Unauthorized: Only owners and admins can invite users');
       }
 

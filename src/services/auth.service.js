@@ -522,11 +522,9 @@ class AuthService {
         }
       }
 
-      // 🔴 Invalidate all session caches for this user
-      // Since we don't have the token, we invalidate by pattern
-      // Note: This will clear all sessions for this user across all devices
-      await cache.deletePattern(`user:session:*`);
-      console.log('🗑️  User session caches invalidated after profile update');
+      // 🔴 Invalidate only THIS user's session caches (not all users)
+      await cache.invalidateUserSessions(userId);
+      console.log('🗑️ User session caches invalidated after profile update');
       
       console.log('✅ Profile updated:', userId);
       return profile;

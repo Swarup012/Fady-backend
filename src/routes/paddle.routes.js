@@ -35,6 +35,13 @@ router.post('/create-checkout-session', paddleController.createCheckoutSession);
 router.get('/subscription', paddleController.getSubscription);
 
 /**
+ * GET /api/paddle/invoices/:transactionId/download
+ * Download invoice PDF (proxied through backend to avoid exposing API key)
+ * NOTE: This must come BEFORE /invoices to avoid route conflicts
+ */
+router.get('/invoices/:transactionId/download', paddleController.downloadInvoice);
+
+/**
  * GET /api/paddle/invoices
  * Get invoices/payment history
  */

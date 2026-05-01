@@ -703,8 +703,8 @@ async function checkRoadmapItemLimit(req, res, next) {
 /**
  * Middleware: Check organization creation limit
  * Free plan: 1 organization
- * Starter plan: 1 organization
- * Pro plan: 1 organization
+ * Starter plan: 2 organizations
+ * Pro plan: 2 organizations
  */
 async function checkOrganizationLimit(req, res, next) {
   try {
@@ -741,7 +741,7 @@ async function checkOrganizationLimit(req, res, next) {
 
       if (hasStarterPlan) {
         userPlan = 'starter';
-        maxOrganizations = 1;
+        maxOrganizations = 2;
       }
     }
 
@@ -764,8 +764,8 @@ async function checkOrganizationLimit(req, res, next) {
       return res.status(403).json({
         success: false,
         message: userPlan === 'free' 
-          ? `Organization limit reached. Free plan allows ${maxOrganizations} organization. Upgrade to Starter for ${1} organization.`
-          : `Organization limit reached. ${userPlan === 'starter' ? 'Starter' : 'Pro'} plan allows ${maxOrganizations} organization.`,
+          ? `Organization limit reached. Free plan allows ${maxOrganizations} organization. Upgrade to Starter for ${maxOrganizations + 1} organizations.`
+          : `Organization limit reached. ${userPlan === 'starter' ? 'Starter' : 'Pro'} plan allows ${maxOrganizations} organizations.`,
         error: 'ORGANIZATION_LIMIT_REACHED',
         upgrade_required: userPlan === 'free',
         current_count: ownedOrgCount,

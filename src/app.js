@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const fileUpload = require("express-fileupload");
+const path = require("path");
 const config = require("./config/env.config");
 const authRoutes = require("./routes/auth.routes");
 const boardRoutes = require("./routes/board.routes");
@@ -14,6 +15,9 @@ const organizationRoutes = require("./routes/organization.routes");
 const invitationRoutes = require("./routes/invitation.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const customDomainRoutes = require("./routes/custom-domain.routes");
+const dashboardRoutes = require("./routes/dashboard.routes");
+const widgetRoutes = require("./routes/widget.routes");
+const adminWidgetRoutes = require("./routes/admin-widget.routes");
 const { authenticate } = require("./middleware/auth.middleware");
 const { injectOrganization } = require("./middleware/organization.middleware");
 
@@ -110,6 +114,9 @@ app.use((req, res, next) => {
 const cookieParser = require('cookie-parser');
 app.use(cookieParser());
 
+// Serve static files from public directory (MUST be before routes)
+app.use(express.static(path.join(__dirname, '../public')));
+
 // Request logging (development)
 if (config.nodeEnv === "development") {
   app.use((req, res, next) => {
@@ -134,6 +141,9 @@ app.get("/health", (req, res) => {
 // ✅ PUBLIC ROUTES (NO AUTHENTICATION, but with organization context)
 app.use("/api/public", injectOrganization, publicRoutes); // ← Organization middleware for subdomain context
 app.use("/api", roadMapRoutes); // ← Roadmap routes handle their own auth (public routes first)
+
+// ✅ WIDGET ROUTES (public, but origin-validated)
+app.use("/api/widget", widgetRoutes);
 
 // API Routes (require authentication)
 app.use("/api/auth", authRoutes);
@@ -171,12 +181,16 @@ app.use("/api/custom-domains", authenticate, injectOrganization, customDomainRou
 
 // ✅ AUTHENTICATED ROUTES WITH ORGANIZATION CONTEXT
 // Organization middleware is added to validate subdomain access
+app.use("/api/dashboard", authenticate, injectOrganization, dashboardRoutes);
 app.use("/api/boards", authenticate, injectOrganization, boardRoutes);
 app.use("/api/users", authenticate, injectOrganization, userRoutes);
 app.use("/api/organizations", organizationRoutes); // Organization routes handle their own auth (some routes are public)
 app.use("/api/upload", authenticate, injectOrganization, uploadRoutes);
 app.use("/api", authenticate, injectOrganization, changelogRoutes);
 app.use("/api", authenticate, injectOrganization, postRoutes);
+
+// ✅ ADMIN WIDGET ROUTES (authenticated, organization-scoped, admin/owner only)
+app.use("/api/admin/widgets", adminWidgetRoutes);
 
 // 404 Handler
 app.use((req, res) => {

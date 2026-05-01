@@ -47,6 +47,9 @@ services:
       # Exclude node_modules
       - /app/node_modules
     command: npm run dev
+    extra_hosts:
+      # Fix for Jio ISP DNS routing issue - bypass broken Jio DNS for Supabase
+      - "atvdxtnuimpyhpknrwww.supabase.co:172.64.149.246"
 
 networks:
   fady-network-dev:
