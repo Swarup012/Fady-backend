@@ -26,10 +26,12 @@
   let config = {
     apiKey: null,
     widgetId: null,
+    apiSecret: null, // DEV ONLY — never expose in production client code
     baseUrl: 'http://localhost:3000', // Change this to your production URL
     position: 'bottom-right',
     color: '#3b82f6',
     zIndex: 9999,
+    hideButton: false, // New setting to hide the floating bubble natively
   };
 
   // Widget state
@@ -39,6 +41,7 @@
     container: null,
     toggleButton: null,
     currentUser: null,
+    context: {},
   };
 
   // Message types for postMessage communication
@@ -47,9 +50,11 @@
     IDENTIFY: 'IDENTIFY',
     OPEN: 'OPEN',
     CLOSE: 'CLOSE',
-    READY: 'READY',
     FEEDBACK_SUBMITTED: 'FEEDBACK_SUBMITTED',
     ERROR: 'ERROR',
+    SHOW_PROMPT: 'SHOW_PROMPT',
+    TRACK: 'TRACK',
+    READY: 'READY',
   };
 
   /**
@@ -57,6 +62,83 @@
    */
   function generateWidgetId() {
     return 'feedy-widget-' + Math.random().toString(36).substr(2, 9);
+  }
+
+  const RESERVED_IDENTITY_KEYS = new Set([
+    'userID', 'id', 'userId', 'email', 'name', 'timestamp', 'hash', 'custom_fields',
+  ]);
+
+  function bufferToHex(buffer) {
+    return Array.from(new Uint8Array(buffer))
+      .map(function (b) { return b.toString(16).padStart(2, '0'); })
+      .join('');
+  }
+
+  /**
+   * HMAC-SHA256(api_secret, userID + ":" + email + ":" + timestamp)
+   */
+  async function generateIdentityHash(apiSecret, userID, email, timestamp) {
+    var payload = userID + ':' + email + ':' + timestamp;
+    var enc = new TextEncoder();
+    var key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(apiSecret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    var signature = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+    return bufferToHex(signature);
+  }
+
+  /**
+   * Build signed identity for widget API (verified SDK path).
+   */
+  async function buildSignedIdentity(user) {
+    var userID = user.userID || user.id || user.userId;
+    var email = user.email ? String(user.email).trim().toLowerCase() : null;
+    var name = user.name || null;
+
+    if (!userID) {
+      console.error('❌ Feedy Widget: userID (or id) is required');
+      return null;
+    }
+    if (!email) {
+      console.error('❌ Feedy Widget: email is required for verified SDK identity');
+      return null;
+    }
+
+    var timestamp = user.timestamp;
+    var hash = user.hash;
+
+    if (!hash) {
+      if (!config.apiSecret) {
+        console.error('❌ Feedy Widget: Provide hash+timestamp from your server, or apiSecret in init() for local dev ONLY');
+        return null;
+      }
+      console.warn('⚠️ Feedy Widget: Browser-side signing — DEV ONLY. Use server-side HMAC in production.');
+      timestamp = Math.floor(Date.now() / 1000);
+      hash = await generateIdentityHash(config.apiSecret, userID, email, String(timestamp));
+    }
+
+    var custom_fields = user.custom_fields && typeof user.custom_fields === 'object'
+      ? Object.assign({}, user.custom_fields)
+      : {};
+
+    Object.keys(user).forEach(function (key) {
+      if (!RESERVED_IDENTITY_KEYS.has(key) && user[key] !== undefined && user[key] !== null) {
+        custom_fields[key] = user[key];
+      }
+    });
+
+    return {
+      userID: userID,
+      email: email,
+      name: name,
+      timestamp: timestamp,
+      hash: hash,
+      custom_fields: custom_fields,
+    };
   }
 
   /**
@@ -125,7 +207,11 @@
 
     // Add elements to container
     container.appendChild(iframe);
-    container.appendChild(toggleButton);
+    
+    // Only add toggle button if not hidden
+    if (!config.hideButton) {
+      container.appendChild(toggleButton);
+    }
     document.body.appendChild(container);
 
     // Store references
@@ -153,16 +239,8 @@
     switch (type) {
       case MESSAGE_TYPES.READY:
         console.log('✅ Widget is ready');
-        // Send user context if available
         if (widgetState.currentUser) {
-          widgetState.iframe.contentWindow.postMessage(
-            {
-              type: MESSAGE_TYPES.IDENTIFY,
-              data: widgetState.currentUser,
-            },
-            config.baseUrl
-          );
-          console.log('✅ Feedy Widget: Sent user data to iframe after READY');
+          sendIdentify();
         }
         break;
 
@@ -183,17 +261,21 @@
   }
 
   /**
-   * Send identify message to iframe
+   * Send signed identify message to iframe
    */
-  function sendIdentify() {
+  async function sendIdentify() {
     if (!widgetState.iframe || !widgetState.currentUser) {
       return;
     }
 
+    var signed = await buildSignedIdentity(widgetState.currentUser);
+    if (!signed) return;
+
+    widgetState.currentUser = signed;
     widgetState.iframe.contentWindow.postMessage(
       {
         type: MESSAGE_TYPES.IDENTIFY,
-        data: widgetState.currentUser,
+        data: signed,
       },
       config.baseUrl
     );
@@ -209,13 +291,13 @@
       widgetState.iframe.style.display = 'block';
       widgetState.iframe.contentWindow.postMessage(
         { type: MESSAGE_TYPES.OPEN },
-        config.baseUrl
+        '*'
       );
     } else {
       widgetState.iframe.style.display = 'none';
       widgetState.iframe.contentWindow.postMessage(
         { type: MESSAGE_TYPES.CLOSE },
-        config.baseUrl
+        '*'
       );
     }
   }
@@ -243,30 +325,21 @@
   }
 
   /**
-   * Identify user
-   * Can be called anytime to update user context
+   * Identify user (requires email + userID; hash from server or apiSecret dev mode)
    */
-  function identify(user) {
-    if (!user.id) {
+  async function identify(user) {
+    if (!user.id && !user.userID) {
       console.error('❌ Feedy Widget: User ID is required for identify()');
       return;
     }
 
-    widgetState.currentUser = user;
+    widgetState.currentUser = Object.assign({}, user, widgetState.context);
 
-    // Send to iframe if it's ready
     if (widgetState.iframe && widgetState.iframe.contentWindow) {
-      widgetState.iframe.contentWindow.postMessage(
-        {
-          type: MESSAGE_TYPES.IDENTIFY,
-          data: user,
-        },
-        config.baseUrl
-      );
-      console.log('✅ Feedy Widget: User identified, message sent to iframe');
+      await sendIdentify();
+      console.log('✅ Feedy Widget: User identified, signed payload sent to iframe');
     } else {
-      console.warn('⚠️ Feedy Widget: Iframe not ready yet, user data stored but not sent');
-      console.log('💡 Tip: Call identify() after widget is fully loaded, or wait for READY event');
+      console.warn('⚠️ Feedy Widget: Iframe not ready yet, user data stored');
     }
   }
 
@@ -285,6 +358,53 @@
   function close() {
     if (widgetState.isOpen) {
       toggleWidget();
+    }
+  }
+
+  /**
+   * Set context
+   * Updates contextual data for the user/session
+   */
+  function setContext(contextObj) {
+    if (!contextObj || typeof contextObj !== 'object') return;
+    
+    widgetState.context = { ...widgetState.context, ...contextObj };
+    
+    // If user is already identified, re-identify to sync new context
+    if (widgetState.currentUser && (widgetState.currentUser.id || widgetState.currentUser.userID)) {
+      identify(Object.assign({}, widgetState.currentUser, widgetState.context));
+    }
+  }
+
+  /**
+   * Show feedback prompt with optional pre-filled data/context
+   */
+  function showFeedbackPrompt(options = {}) {
+    open(); // Ensure it's open
+    
+    if (widgetState.iframe && widgetState.iframe.contentWindow) {
+      widgetState.iframe.contentWindow.postMessage(
+        {
+          type: MESSAGE_TYPES.SHOW_PROMPT,
+          data: options,
+        },
+        '*'
+      );
+    }
+  }
+
+  /**
+   * Track an event
+   */
+  function track(eventName, eventData = {}) {
+    if (widgetState.iframe && widgetState.iframe.contentWindow) {
+      widgetState.iframe.contentWindow.postMessage(
+        {
+          type: MESSAGE_TYPES.TRACK,
+          data: { event: eventName, properties: eventData },
+        },
+        config.baseUrl
+      );
     }
   }
 
@@ -310,8 +430,11 @@
   window.FeedyWidget = {
     init,
     identify,
+    setContext,
     open,
     close,
+    showFeedbackPrompt,
+    track,
     destroy,
   };
 

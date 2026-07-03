@@ -2,6 +2,30 @@ const authService = require('../services/auth.service');
 const storageService = require('../services/storage.service');
 const ResponseUtil = require('../utils/response.util');
 const { supabase, supabaseAdmin } = require('../config/supabase.config');
+const config = require('../config/env.config');
+
+/**
+ * Build cookie options.
+ * IMPORTANT: Browsers silently reject cookies with domain='.localhost'.
+ * In development we omit the domain attribute entirely so the browser
+ * scopes the cookie to the exact origin (localhost:3000).
+ * In production we set domain='.faddy.site' for cross-subdomain sharing.
+ */
+function makeCookieOptions(overrides = {}) {
+  const base = {
+    httpOnly: true,
+    secure: config.cookieSecure,
+    sameSite: 'lax',
+    maxAge: config.cookieMaxAge,
+    path: '/',
+  };
+  // Only set domain in production — omitting it in dev makes cookies work on localhost
+  if (config.isProduction) {
+    base.domain = `.${config.cookieDomain}`;
+  }
+  return { ...base, ...overrides };
+}
+
 
 class AuthController {
   /**
@@ -17,15 +41,7 @@ class AuthController {
       const result = await authService.signupOrJoin({ email, password, name, role, organizationId });
 
       // Set HTTP-only cookies for cross-subdomain authentication
-      const config = require('../config/env.config');
-      const cookieOptions = {
-        httpOnly: true,
-        secure: config.cookieSecure,
-        sameSite: 'lax',
-        domain: `.${config.cookieDomain}`, // Leading dot makes it work across subdomains
-        maxAge: config.cookieMaxAge,
-        path: '/'
-      };
+      const cookieOptions = makeCookieOptions();
 
       // Check if this was an existing user joining
       if (result.action === 'joined_existing') {
@@ -35,12 +51,7 @@ class AuthController {
         return ResponseUtil.success(
           res,
           'Successfully joined organization.',
-          {
-            user: result.user,
-            access_token: result.session.access_token,
-            refresh_token: result.session.refresh_token,
-            action: 'joined_existing'
-          },
+          { user: result.user, action: 'joined_existing' },
           200
         );
       }
@@ -60,20 +71,14 @@ class AuthController {
         );
       }
 
-      // Email confirmation is disabled - return tokens and set cookies
+      // Email confirmation is disabled - set HttpOnly cookies and return user only
       res.cookie('access_token', result.session.access_token, cookieOptions);
       res.cookie('refresh_token', result.session.refresh_token, cookieOptions);
 
       return ResponseUtil.success(
         res,
         'User registered successfully.',
-        {
-          user: result.user,
-          access_token: result.session.access_token,
-          refresh_token: result.session.refresh_token,
-          emailConfirmationRequired: false,
-          action: 'created_new'
-        },
+        { user: result.user, emailConfirmationRequired: false, action: 'created_new' },
         201
       );
     } catch (error) {
@@ -110,23 +115,14 @@ class AuthController {
       const result = await authService.login({ email, password, organizationId, userRole });
 
       // Set HTTP-only cookies for cross-subdomain authentication
-      const config = require('../config/env.config');
-      const cookieOptions = {
-        httpOnly: true,
-        secure: config.cookieSecure,
-        sameSite: 'lax',
-        domain: `.${config.cookieDomain}`, // Leading dot makes it work across subdomains
-        maxAge: config.cookieMaxAge,
-        path: '/'
-      };
+      const cookieOptions = makeCookieOptions();
 
       res.cookie('access_token', result.session.access_token, cookieOptions);
       res.cookie('refresh_token', result.session.refresh_token, cookieOptions);
 
+      // Tokens are delivered via HttpOnly cookies — do NOT return them in the JSON body
       return ResponseUtil.success(res, 'Login successful', {
         user: result.user,
-        access_token: result.session.access_token, // Still return for backward compatibility
-        refresh_token: result.session.refresh_token,
         joinedOrganization: result.joinedOrganization || false
       });
     } catch (error) {
@@ -155,33 +151,19 @@ class AuthController {
       await authService.logout(req.token);
 
       // Clear HTTP-only cookies
-      const config = require('../config/env.config');
-      const cookieOptions = {
-        httpOnly: true,
-        secure: config.cookieSecure,
-        sameSite: 'lax',
-        domain: `.${config.cookieDomain}`,
-        path: '/'
-      };
+      const clearOpts = makeCookieOptions({ maxAge: undefined });
 
-      res.clearCookie('access_token', cookieOptions);
-      res.clearCookie('refresh_token', cookieOptions);
+      res.clearCookie('access_token', clearOpts);
+      res.clearCookie('refresh_token', clearOpts);
 
       return ResponseUtil.success(res, 'Logout successful');
     } catch (error) {
       console.error('Logout controller error:', error);
       // Even if logout fails, clear cookies and return success to client
-      const config = require('../config/env.config');
-      const cookieOptions = {
-        httpOnly: true,
-        secure: config.cookieSecure,
-        sameSite: 'lax',
-        domain: `.${config.cookieDomain}`,
-        path: '/'
-      };
+      const clearOpts = makeCookieOptions({ maxAge: undefined });
 
-      res.clearCookie('access_token', cookieOptions);
-      res.clearCookie('refresh_token', cookieOptions);
+      res.clearCookie('access_token', clearOpts);
+      res.clearCookie('refresh_token', clearOpts);
 
       return ResponseUtil.success(res, 'Logout successful');
     }
@@ -346,21 +328,65 @@ class AuthController {
    */
   async refreshSession(req, res, next) {
     try {
-      const { refresh_token } = req.body;
+      // Read the refresh token from the HttpOnly cookie (not the request body)
+      const refresh_token = req.cookies?.refresh_token;
 
       if (!refresh_token) {
-        return ResponseUtil.error(res, 'Refresh token is required', 400);
+        return ResponseUtil.error(res, 'No refresh token cookie found', 401);
       }
 
       const session = await authService.refreshSession(refresh_token);
 
-      return ResponseUtil.success(res, 'Session refreshed successfully', {
-        access_token: session.access_token,
-        refresh_token: session.refresh_token
-      });
+      // Rotate both cookies with the new tokens
+      const cookieOptions = makeCookieOptions();
+
+      res.cookie('access_token', session.access_token, cookieOptions);
+      res.cookie('refresh_token', session.refresh_token, cookieOptions);
+
+      // No tokens in the body — the new cookies are all the client needs
+      return ResponseUtil.success(res, 'Session refreshed successfully');
     } catch (error) {
       console.error('Refresh session controller error:', error);
       return ResponseUtil.error(res, 'Invalid or expired refresh token', 401);
+    }
+  }
+
+  /**
+   * Issue a short-lived WebSocket ticket for Socket.io authentication.
+   * HttpOnly cookies cannot be read by JS and are not reliably forwarded
+   * during the Socket.io HTTP handshake, so we issue a one-time signed
+   * ticket (TTL: 30 seconds) that the client passes in socket.auth.ticket.
+   *
+   * GET /api/auth/ws-ticket  (requires authenticate middleware)
+   */
+  async getWsTicket(req, res, next) {
+    try {
+      const jwt = require('jsonwebtoken');
+      const crypto = require('crypto');
+
+      if (!process.env.JWT_SECRET) {
+        return ResponseUtil.error(res, 'Server configuration error', 500);
+      }
+
+      // One-time nonce prevents replay attacks
+      const nonce = crypto.randomBytes(16).toString('hex');
+
+      const ticket = jwt.sign(
+        {
+          userId: req.user.id,
+          email: req.user.email,
+          organizationId: req.user.current_organization_id,
+          nonce,
+          purpose: 'ws-ticket',  // Scope this token so it can't be used as a regular access token
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '30s' }   // Very short TTL — client connects immediately after receiving it
+      );
+
+      return ResponseUtil.success(res, 'WS ticket issued', { ticket });
+    } catch (error) {
+      console.error('getWsTicket error:', error);
+      next(error);
     }
   }
 
@@ -577,14 +603,7 @@ class AuthController {
       );
 
       // Set HTTP-only cookies
-      const cookieOptions = {
-        httpOnly: true,
-        secure: config.cookieSecure,
-        sameSite: 'lax',
-        domain: `.${config.cookieDomain}`,
-        maxAge: config.cookieMaxAge,
-        path: '/'
-      };
+      const cookieOptions = makeCookieOptions();
 
       res.cookie('access_token', token, cookieOptions);
 

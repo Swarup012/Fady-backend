@@ -45,7 +45,7 @@
         const configData = await configResponse.json();
 
         if (configData.success) {
-          config = configData.data;
+          config = configData.data || configData.message;
           // Notify parent that widget is ready
           window.parent.postMessage({ type: 'READY' }, '*');
         }
@@ -55,7 +55,8 @@
         const feedbackData = await feedbackResponse.json();
 
         if (feedbackData.success) {
-          feedback = feedbackData.data.feedback;
+          const feedbackPayload = feedbackData.data || feedbackData.message;
+          feedback = feedbackPayload.feedback;
         }
 
         render();
@@ -65,47 +66,65 @@
       }
     }
 
-    // Identify user
+    // Identify user (signed SDK payload)
     async function identifyUser(user) {
       try {
         const response = await fetch(`${BACKEND_API_URL}/api/widget/identify?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(user),
         });
 
         const data = await response.json();
-        console.log('✅ User identified:', data);
-
-        // Store the user data - we need the external user ID (from parent app) for creating feedback
-        currentUser = user;
+        if (data.success) {
+          console.log('✅ User identified:', data);
+          currentUser = user;
+        } else {
+          console.error('❌ Identify failed:', data);
+        }
       } catch (error) {
         console.error('❌ Failed to identify user:', error);
       }
     }
 
-    // Create feedback
-    async function createFeedback(title, description) {
-      console.log('📝 Creating feedback:', { title, description, currentUser });
+    function identityPayload() {
+      if (!currentUser) return null;
+      return {
+        userID: currentUser.userID || currentUser.id,
+        email: currentUser.email,
+        name: currentUser.name,
+        timestamp: currentUser.timestamp,
+        hash: currentUser.hash,
+        custom_fields: currentUser.custom_fields || {},
+      };
+    }
 
-      if (!currentUser || !currentUser.id) {
-        console.error('❌ No user identified yet, cannot create feedback');
-        alert('Please wait for user identification to complete');
-        return;
+    // Create feedback
+    async function createFeedback(title, description, emailInput) {
+      console.log('📝 Creating feedback:', { title, description, currentUser, emailInput });
+
+      let identity = identityPayload();
+      
+      // If no SDK identity, check if we can use email_only mode
+      if (!identity || !identity.userID || !identity.hash) {
+        const strictMode = config?.widget?.settings?.require_sdk_identity !== false;
+        
+        if (!strictMode && emailInput) {
+          identity = { email: emailInput, identity_mode: 'email_only' };
+        } else {
+          alert('Please wait for user identification or provide an email');
+          return;
+        }
       }
 
       try {
         const response = await fetch(`${BACKEND_API_URL}/api/widget/feedback?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             title,
             description,
-            external_user_id: currentUser.id, // Use the external user ID from parent app
+            ...identity,
           }),
         });
 
@@ -121,7 +140,7 @@
           // Notify parent
           window.parent.postMessage({
             type: 'FEEDBACK_SUBMITTED',
-            data: data.data.feedback,
+            data: (data.data || data.message).feedback,
           }, '*');
         } else {
           console.error('❌ Feedback creation failed:', data);
@@ -133,9 +152,10 @@
       }
     }
 
-    // Vote on feedback
+    // Vote on feedback (signed identity required)
     async function vote(feedbackId) {
-      if (!currentUser?.id) {
+      const identity = identityPayload();
+      if (!identity || !identity.hash) {
         alert('Please identify yourself first');
         return;
       }
@@ -143,12 +163,10 @@
       try {
         const response = await fetch(`${BACKEND_API_URL}/api/widget/vote?apiKey=${apiKey}${widgetId ? '&widgetId=' + widgetId : ''}`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             feedback_id: feedbackId,
-            external_user_id: currentUser.id,
+            ...identity,
           }),
         });
 
@@ -232,10 +250,11 @@
             ${showCreateForm ? `
               <!-- Create Form -->
               <div class="mb-4 p-4 border rounded-lg">
+                ${(function() { var needsEmail = !currentUser && config && config.widget && config.widget.settings && config.widget.settings.require_sdk_identity === false; return needsEmail ? '<input type="email" id="feedback-email" placeholder="Your Email Address (Required)" class="w-full mb-3 px-3 py-2 border rounded" value="">' : ''; })()}
                 <input type="text" id="feedback-title" placeholder="What would you like to see?" class="w-full mb-3 px-3 py-2 border rounded" value="">
                 <textarea id="feedback-description" placeholder="Describe your idea in more detail..." class="w-full mb-3 px-3 py-2 border rounded min-h-[80px]"></textarea>
                 <div class="flex gap-2">
-                  <button onclick="createFeedback(document.getElementById('feedback-title').value, document.getElementById('feedback-description').value)" class="flex-1 px-4 py-2 rounded text-white" style="background-color: ${primaryColor}">
+                  <button onclick="createFeedback(document.getElementById('feedback-title').value, document.getElementById('feedback-description').value, document.getElementById('feedback-email')?.value)" class="flex-1 px-4 py-2 rounded text-white" style="background-color: ${primaryColor}">
                     Submit
                   </button>
                   <button onclick="showCreateForm = false; render();" class="px-4 py-2 border rounded">
@@ -285,7 +304,7 @@
                       ` : ''}
 
                       <div class="flex items-center gap-2 mt-2 text-xs text-gray-500">
-                        <span>${item.user.name || 'Anonymous'}</span>
+                        <span>${item.user?.name || 'Anonymous'}</span>
                         <span>•</span>
                         <span>${new Date(item.created_at).toLocaleDateString()}</span>
                       </div>
@@ -312,6 +331,23 @@
         console.log('📖 Widget opened');
       } else if (event.data.type === 'CLOSE') {
         console.log('📕 Widget closed');
+      } else if (event.data.type === 'SHOW_PROMPT') {
+        console.log('📝 Show feedback prompt requested', event.data.data);
+        const options = event.data.data || {};
+        
+        // Open the create form
+        showCreateForm = true;
+        
+        // We need to re-render first so the input elements exist in the DOM
+        render();
+        
+        // Now set their values
+        if (options.title && document.getElementById('feedback-title')) {
+          document.getElementById('feedback-title').value = options.title;
+        }
+        if (options.description && document.getElementById('feedback-description')) {
+          document.getElementById('feedback-description').value = options.description;
+        }
       }
     });
 

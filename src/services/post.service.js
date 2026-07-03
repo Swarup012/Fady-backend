@@ -1,6 +1,7 @@
 const { supabaseAdmin } = require("../config/supabase.config");
 const cache = require("./redis.service");
 const dashboardService = require("./dashboard.service");
+const clusterService = require("./cluster.service");
 const { emitPostUpvoted, emitPostCreated, emitPostUpdated, emitPostDeleted, emitPostCommentCount } = require("../socket/handlers/post.handler");
 const { emitCommentNew, emitCommentUpdated, emitCommentDeleted, emitCommentLiked } = require("../socket/handlers/comment.handler");
 const {
@@ -11,6 +12,11 @@ const {
   emitCommentCreatedWebhook,
   emitVoteCreatedWebhook,
 } = require("./webhook-events");
+
+/** Supabase embed for widget submitters (legacy external_users + new org_end_users) */
+const EXTERNAL_AUTHOR_SELECT =
+  "external_author:external_users!external_user_id(id, external_user_id, name, email, context),\n" +
+  "          org_end_user:org_end_users!org_end_user_id(id, external_user_id, name, email, identity_type, custom_fields)";
 
 class PostService {
   /**
@@ -37,6 +43,7 @@ class PostService {
           `
           *,
           author:users!author_id(id, name, email),
+          ${EXTERNAL_AUTHOR_SELECT},
           board:boards!board_id(id, name, slug, icon)
         `,
         )
@@ -108,6 +115,7 @@ class PostService {
           `
           *,
           author:users!author_id(id, name, email),
+          ${EXTERNAL_AUTHOR_SELECT},
           board:boards!board_id(id, name, slug, icon)
         `,
         )
@@ -184,6 +192,7 @@ class PostService {
           `
           *,
           author:users!author_id(id, name, email, avatar_url),
+          ${EXTERNAL_AUTHOR_SELECT},
           board:boards!board_id(id, name, slug, icon, is_private)
         `,
         )
@@ -297,6 +306,11 @@ class PostService {
 
       // 🔗 Fire webhook: post.created
       emitPostCreatedWebhook(data.organization_id, data, frontendOrigin);
+
+      // 🤖 Trigger AI cluster assignment (fire-and-forget, non-blocking)
+      clusterService
+        .triggerClusterAssignment(board_id, data.id, title, description || '')
+        .catch((err) => console.error('❌ Cluster assignment trigger failed (non-fatal):', err.message));
 
       return data;
     } catch (error) {
@@ -1000,6 +1014,7 @@ class PostService {
         .select(`
           *,
           author:users!author_id(id, name, email, avatar_url),
+          ${EXTERNAL_AUTHOR_SELECT},
           board:boards!board_id(id, name, slug, icon, is_private)
         `)
         .eq('organization_id', org.id)
@@ -1035,4 +1050,6 @@ class PostService {
   }
 }
 
-module.exports = new PostService();
+const postService = new PostService();
+module.exports = postService;
+module.exports.EXTERNAL_AUTHOR_SELECT = EXTERNAL_AUTHOR_SELECT;

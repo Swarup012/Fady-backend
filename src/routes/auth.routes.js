@@ -77,4 +77,8 @@ router.post(
 // Update user role (post-auth role selection)
 router.put('/update-role', authController.updateRole);
 
+// Issue a short-lived Socket.io authentication ticket (HttpOnly cookies
+// are not forwarded on WS handshakes, so we exchange a one-time ticket)
+router.get('/ws-ticket', authController.getWsTicket);
+
 module.exports = router;

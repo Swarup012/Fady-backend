@@ -1,4 +1,6 @@
 const { supabaseAdmin } = require('../config/supabase.config');
+const cache = require('./redis.service');
+const dashboardService = require('./dashboard.service');
 const crypto = require('crypto');
 
 /**
@@ -14,11 +16,37 @@ class WidgetService {
   }
 
   /**
+   * Generate API secret for HMAC SDK identity signing.
+   */
+  generateApiSecret() {
+    return `wsec_${crypto.randomBytes(32).toString('hex')}`;
+  }
+
+  /**
+   * Strip api_secret from widget objects returned to clients.
+   */
+  sanitizeWidget(widget) {
+    if (!widget) return widget;
+    const { api_secret, ...safe } = widget;
+    return {
+      ...safe,
+      has_api_secret: Boolean(api_secret),
+    };
+  }
+
+  /**
    * Create a new widget instance for an organization
    */
   async createWidget({ organization_id, name, default_board_id, allowed_domains, branding, settings }) {
     try {
       console.log('🔧 Creating widget for organization:', organization_id);
+
+      const defaultSettings = {
+        show_voting: true,
+        allow_anonymous: false,
+        show_roadmap: true,
+        require_sdk_identity: true,
+      };
 
       const { data, error } = await supabaseAdmin
         .from('widget_instances')
@@ -26,14 +54,11 @@ class WidgetService {
           organization_id,
           name: name || 'Default Widget',
           api_key: this.generateApiKey(),
+          api_secret: this.generateApiSecret(),
           default_board_id,
           allowed_domains: allowed_domains || [],
           branding: branding || {},
-          settings: settings || {
-            show_voting: true,
-            allow_anonymous: false,
-            show_roadmap: true,
-          },
+          settings: { ...defaultSettings, ...(settings || {}) },
         })
         .select()
         .single();
@@ -307,6 +332,129 @@ class WidgetService {
     } catch (error) {
       console.error('❌ Get external user by external ID error:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Rotate API secret for a widget instance.
+   */
+  async rotateApiSecret(widgetId) {
+    const api_secret = this.generateApiSecret();
+    const { data, error } = await supabaseAdmin
+      .from('widget_instances')
+      .update({ api_secret, updated_at: new Date().toISOString() })
+      .eq('id', widgetId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  /**
+   * Toggle upvote for a widget (external) user on a post.
+   */
+  async vote(postId, externalUser, orgEndUser = null) {
+    try {
+      const externalUserUuid = externalUser.id;
+
+      const { data: existing, error: findError } = await supabaseAdmin
+        .from('upvotes')
+        .select('id')
+        .eq('post_id', postId)
+        .eq('external_user_id', externalUserUuid)
+        .maybeSingle();
+
+      if (findError) throw findError;
+
+      if (existing) {
+        const { error: deleteError } = await supabaseAdmin
+          .from('upvotes')
+          .delete()
+          .eq('id', existing.id);
+
+        if (deleteError) throw deleteError;
+
+        const { error: decError } = await supabaseAdmin.rpc('decrement_vote_count', {
+          post_id: postId,
+        });
+        if (decError) {
+          const { data: post } = await supabaseAdmin
+            .from('posts')
+            .select('upvotes')
+            .eq('id', postId)
+            .single();
+          await supabaseAdmin
+            .from('posts')
+            .update({ upvotes: Math.max((post?.upvotes || 1) - 1, 0) })
+            .eq('id', postId);
+        }
+
+        console.log('✅ Widget upvote removed');
+        return { upvoted: false };
+      }
+
+      const upvoteRow = {
+        post_id: postId,
+        external_user_id: externalUserUuid,
+      };
+      if (orgEndUser?.id) {
+        upvoteRow.org_end_user_id = orgEndUser.id;
+      }
+
+      const { error: insertError } = await supabaseAdmin.from('upvotes').insert([upvoteRow]);
+
+      if (insertError) throw insertError;
+
+      const { error: incError } = await supabaseAdmin.rpc('increment_vote_count', {
+        post_id: postId,
+      });
+      if (incError) {
+        const { data: post } = await supabaseAdmin
+          .from('posts')
+          .select('upvotes')
+          .eq('id', postId)
+          .single();
+        await supabaseAdmin
+          .from('posts')
+          .update({ upvotes: (post?.upvotes || 0) + 1 })
+          .eq('id', postId);
+      }
+
+      console.log('✅ Widget upvote added');
+      return { upvoted: true };
+    } catch (error) {
+      console.error('❌ Widget vote error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Invalidate cached post lists after widget create/vote (matches post.service pattern).
+   */
+  async invalidateBoardPostCaches(boardId, organizationId, postId = null) {
+    try {
+      const { data: board } = await supabaseAdmin
+        .from('boards')
+        .select('slug')
+        .eq('id', boardId)
+        .single();
+
+      if (board?.slug) {
+        await cache.deletePattern(`posts:board:${board.slug}:*`);
+        console.log(`🗑️  Widget: post list cache invalidated for board: ${board.slug}`);
+      }
+
+      if (organizationId) {
+        await cache.delete(`posts:org:${organizationId}:all`);
+        await dashboardService.invalidateCache(organizationId);
+      }
+
+      if (postId) {
+        await cache.delete(`post:${postId}`);
+      }
+    } catch (error) {
+      console.warn('⚠️ Widget cache invalidation failed (non-fatal):', error.message);
     }
   }
 }

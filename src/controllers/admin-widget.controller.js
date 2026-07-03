@@ -21,7 +21,7 @@ class AdminWidgetController {
       const widgets = await widgetService.getOrganizationWidgets(organizationId);
 
       return ResponseUtil.success(res, 'Widgets retrieved successfully', {
-        widgets,
+        widgets: widgets.map((w) => widgetService.sanitizeWidget(w)),
         total: widgets.length,
       });
     } catch (error) {
@@ -31,7 +31,7 @@ class AdminWidgetController {
   }
 
   /**
-   * Create a new widget
+   * Create a new widget (returns api_secret once).
    */
   async createWidget(req, res) {
     try {
@@ -47,7 +47,6 @@ class AdminWidgetController {
         return ResponseUtil.error(res, 'Default board is required', 400);
       }
 
-      // Verify board belongs to organization
       const { data: board, error: boardError } = await supabaseAdmin
         .from('boards')
         .select('id')
@@ -69,7 +68,10 @@ class AdminWidgetController {
       });
 
       return ResponseUtil.success(res, 'Widget created successfully', {
-        widget,
+        widget: widgetService.sanitizeWidget(widget),
+        api_secret: widget.api_secret,
+        api_secret_notice:
+          'Copy this API secret now. It is used server-side for HMAC signing and will not be shown again.',
       });
     } catch (error) {
       console.error('❌ Create widget error:', error);
@@ -91,12 +93,13 @@ class AdminWidgetController {
         return ResponseUtil.error(res, 'Widget not found', 404);
       }
 
-      // Verify widget belongs to organization
       if (widget.organization_id !== organizationId) {
         return ResponseUtil.error(res, 'Access denied', 403);
       }
 
-      return ResponseUtil.success(res, 'Widget retrieved successfully', { widget });
+      return ResponseUtil.success(res, 'Widget retrieved successfully', {
+        widget: widgetService.sanitizeWidget(widget),
+      });
     } catch (error) {
       console.error('❌ Get widget error:', error);
       return ResponseUtil.error(res, error.message, 500);
@@ -118,12 +121,10 @@ class AdminWidgetController {
         return ResponseUtil.error(res, 'Widget not found', 404);
       }
 
-      // Verify widget belongs to organization
       if (widget.organization_id !== organizationId) {
         return ResponseUtil.error(res, 'Access denied', 403);
       }
 
-      // If updating default_board_id, verify it belongs to organization
       if (default_board_id) {
         const { data: board, error: boardError } = await supabaseAdmin
           .from('boards')
@@ -146,7 +147,7 @@ class AdminWidgetController {
       });
 
       return ResponseUtil.success(res, 'Widget updated successfully', {
-        widget: updatedWidget,
+        widget: widgetService.sanitizeWidget(updatedWidget),
       });
     } catch (error) {
       console.error('❌ Update widget error:', error);
@@ -168,7 +169,6 @@ class AdminWidgetController {
         return ResponseUtil.error(res, 'Widget not found', 404);
       }
 
-      // Verify widget belongs to organization
       if (widget.organization_id !== organizationId) {
         return ResponseUtil.error(res, 'Access denied', 403);
       }
@@ -178,6 +178,76 @@ class AdminWidgetController {
       return ResponseUtil.success(res, 'Widget deleted successfully');
     } catch (error) {
       console.error('❌ Delete widget error:', error);
+      return ResponseUtil.error(res, error.message, 500);
+    }
+  }
+
+  /**
+   * Rotate API secret (returns new secret once).
+   */
+  async rotateApiSecret(req, res) {
+    try {
+      const { id } = req.params;
+      const organizationId = req.organization?.id;
+
+      const widget = await widgetService.getWidgetById(id);
+
+      if (!widget) {
+        return ResponseUtil.error(res, 'Widget not found', 404);
+      }
+
+      if (widget.organization_id !== organizationId) {
+        return ResponseUtil.error(res, 'Access denied', 403);
+      }
+
+      const updated = await widgetService.rotateApiSecret(id);
+
+      return ResponseUtil.success(res, 'API secret rotated successfully', {
+        widget: widgetService.sanitizeWidget(updated),
+        api_secret: updated.api_secret,
+        api_secret_notice:
+          'Copy this new API secret now. Update your server-side signing code. It will not be shown again.',
+      });
+    } catch (error) {
+      console.error('❌ Rotate API secret error:', error);
+      return ResponseUtil.error(res, error.message, 500);
+    }
+  }
+
+  /**
+   * Ensure legacy widgets have an api_secret (one-time admin action).
+   */
+  async ensureApiSecret(req, res) {
+    try {
+      const { id } = req.params;
+      const organizationId = req.organization?.id;
+
+      const widget = await widgetService.getWidgetById(id);
+
+      if (!widget) {
+        return ResponseUtil.error(res, 'Widget not found', 404);
+      }
+
+      if (widget.organization_id !== organizationId) {
+        return ResponseUtil.error(res, 'Access denied', 403);
+      }
+
+      if (widget.api_secret) {
+        return ResponseUtil.success(res, 'Widget already has an API secret', {
+          widget: widgetService.sanitizeWidget(widget),
+          has_api_secret: true,
+        });
+      }
+
+      const updated = await widgetService.rotateApiSecret(id);
+
+      return ResponseUtil.success(res, 'API secret generated', {
+        widget: widgetService.sanitizeWidget(updated),
+        api_secret: updated.api_secret,
+        api_secret_notice: 'Copy this API secret now. It will not be shown again.',
+      });
+    } catch (error) {
+      console.error('❌ Ensure API secret error:', error);
       return ResponseUtil.error(res, error.message, 500);
     }
   }

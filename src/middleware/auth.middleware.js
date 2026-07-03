@@ -135,14 +135,19 @@ const authenticate = async (req, res, next) => {
 const optionalAuthenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      // No token provided, continue without user
+    let token;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
+    } else if (req.cookies?.access_token) {
+      // Fallback to HttpOnly cookie (same as the main authenticate middleware)
+      token = req.cookies.access_token;
+    }
+
+    if (!token) {
       req.user = null;
       return next();
     }
-
-    const token = authHeader.substring(7);
     
     // 🔴 CACHE: Try to get user session from cache first
     const crypto = require('crypto');

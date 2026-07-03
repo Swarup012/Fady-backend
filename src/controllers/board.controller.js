@@ -2,6 +2,7 @@ const boardService = require("../services/board.service");
 const { validationResult } = require("express-validator");
 const ResponseUtil = require("../utils/response.util");
 const { supabaseAdmin } = require("../config/supabase.config");
+const { EXTERNAL_AUTHOR_SELECT } = require("../services/post.service");
 
 class BoardController {
   async getAllBoards(req, res, next) {
@@ -202,6 +203,7 @@ class BoardController {
             `
              *,
              author:users!author_id(id, name, email),
+             ${EXTERNAL_AUTHOR_SELECT},
              board:boards!board_id(id, name, slug, icon)
            `,
           )
@@ -238,6 +240,7 @@ class BoardController {
           `
            *,
            author:users!author_id(id, name, email),
+           ${EXTERNAL_AUTHOR_SELECT},
            board:boards!board_id(id, name, slug, icon)
          `,
         )
@@ -279,6 +282,7 @@ class BoardController {
           `
            *,
            author:users!author_id(id, name, email, avatar_url),
+           ${EXTERNAL_AUTHOR_SELECT},
            board:boards!board_id(id, name, slug, icon, is_private, organization_id)
          `,
         )

@@ -16,7 +16,10 @@ const config = {
   // Cookie configuration for cross-subdomain auth
   cookieDomain: process.env.COOKIE_DOMAIN || 'localhost', // Will be 'faddy.site' in production
   cookieSecure: process.env.NODE_ENV === 'production', // HTTPS only in production
-  cookieMaxAge: 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
+  cookieMaxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+  // In development, browsers silently reject cookies with domain='.localhost'
+  // So we only set the domain attribute in production
+  isProduction: process.env.NODE_ENV === 'production'
 };
 
 // Validate required environment variables

@@ -18,41 +18,45 @@ const customDomainRoutes = require("./routes/custom-domain.routes");
 const dashboardRoutes = require("./routes/dashboard.routes");
 const widgetRoutes = require("./routes/widget.routes");
 const adminWidgetRoutes = require("./routes/admin-widget.routes");
+const clusterRoutes = require("./routes/cluster.routes");
 const { authenticate } = require("./middleware/auth.middleware");
 const { injectOrganization } = require("./middleware/organization.middleware");
 
 const app = express();
+
+// Trust the Nginx reverse proxy (Crucial for secure cookies behind HTTPS proxies)
+app.set('trust proxy', 1);
 
 // CORS Configuration
 const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps, Postman, curl)
     if (!origin) return callback(null, true);
-    
+
     // Check if origin is in allowed origins list
     if (config.allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    
+
     // Allow all subdomains of localhost:5173 for development
     // Matches: *.localhost:5173 (e.g., startups.localhost:5173, acme.localhost:5173)
     const localhostPattern = /^http:\/\/[\w-]+\.localhost:5173$/;
     if (localhostPattern.test(origin)) {
       return callback(null, true);
     }
-    
+
     // Allow all subdomains of your production domain
     // Matches: *.faddy.site (e.g., notion.faddy.site, acme.faddy.site)
     const productionPattern = /^https:\/\/[\w-]+\.faddy\.site$/;
     if (productionPattern.test(origin)) {
       return callback(null, true);
     }
-    
+
     // Also allow the main domain
     if (origin === 'https://faddy.site') {
       return callback(null, true);
     }
-    
+
     // If none match, reject
     console.warn('⚠️ CORS blocked origin:', origin);
     callback(new Error("Not allowed by CORS"));
@@ -178,6 +182,10 @@ app.use("/api/webhooks", authenticate, injectOrganization, webhookRoutes);
 
 // ✅ CUSTOM DOMAIN ROUTES (authenticated, organization-scoped)
 app.use("/api/custom-domains", authenticate, injectOrganization, customDomainRoutes);
+
+// ✅ CLUSTER ROUTES (authenticated public + internal secret-protected)
+// MUST BE BEFORE global /api routes that have authenticate middleware
+app.use("/api/clusters", clusterRoutes);
 
 // ✅ AUTHENTICATED ROUTES WITH ORGANIZATION CONTEXT
 // Organization middleware is added to validate subdomain access

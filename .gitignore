@@ -6,3 +6,13 @@ npm-debug.log*
 .vscode/
 dist/
 build/
+.context-engine/
+
+# Test files
+test-cluster-real.js
+test-cluster.js
+test-create.js
+test-db.js
+test-label.js
+test-redis.js
+test-sample.js

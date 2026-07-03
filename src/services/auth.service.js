@@ -14,7 +14,7 @@ class AuthService {
       // Check if user already exists
       const { data: existingUser, error: checkError } = await supabaseAdmin
         .from('users')
-        .select('id, auth_id, email, name')
+        .select('id, auth_id, email, name, current_organization_id, avatar_url, created_at')
         .eq('email', email)
         .maybeSingle();
 
@@ -60,12 +60,45 @@ class AuthService {
             .eq('id', existingUser.id)
             .is('current_organization_id', null);
 
+          // Reflect the newly joined org in the user object
+          if (!existingUser.current_organization_id) {
+            existingUser.current_organization_id = organizationId;
+          }
+
           console.log('✅ Existing user joined organization');
         }
 
+        // Fetch organization_role and job_role so the frontend can route correctly
+        // (mirrors what login() does — AuthContext uses organization_role for routing)
+        let organizationRole = null;
+        let jobRole = null;
+        const orgIdForUser = existingUser.current_organization_id;
+
+        if (orgIdForUser) {
+          const { data: membership } = await supabaseAdmin
+            .from('organization_members')
+            .select('role, job_role')
+            .eq('user_id', existingUser.id)
+            .eq('organization_id', orgIdForUser)
+            .single();
+
+          if (membership) {
+            organizationRole = membership.role;
+            jobRole = membership.job_role;
+            console.log(`✅ Existing user org role: ${organizationRole}, job_role: ${jobRole}`);
+          }
+        }
+
+        const userWithOrgRole = {
+          ...existingUser,
+          organization_role: organizationRole,
+          organization_id: orgIdForUser,
+          job_role: jobRole,
+        };
+
         return {
           action: 'joined_existing',
-          user: existingUser,
+          user: userWithOrgRole,
           session: authData.session
         };
       }
@@ -78,6 +111,7 @@ class AuthService {
       throw error;
     }
   }
+
 
   /**
    * Register a new user - With organization role support
@@ -241,6 +275,18 @@ class AuthService {
       
       console.log(`✅ Signup complete - organization_role: ${organizationRole}, job_role: ${jobRole}`);
 
+      const orgEndUserService = require('./org-end-user.service');
+      orgEndUserService
+        .linkOrgEndUsersToAuthUser(profile.email, profile.id)
+        .then(({ count }) => {
+          if (count > 0) {
+            console.log(`🔗 Linked ${count} org_end_user record(s) on signup`);
+          }
+        })
+        .catch((err) =>
+          console.warn('⚠️ org_end_users link on signup failed (non-fatal):', err.message),
+        );
+
       // Return response
       return {
         action: 'created_new',
@@ -291,6 +337,19 @@ class AuthService {
 
       console.log('✅ Login successful:', profile.email);
       console.log('🔍 User current_organization_id:', profile.current_organization_id);
+
+      // Link widget org_end_users with same email to this auth user (all orgs)
+      const orgEndUserService = require('./org-end-user.service');
+      orgEndUserService
+        .linkOrgEndUsersToAuthUser(profile.email, profile.id)
+        .then(({ count }) => {
+          if (count > 0) {
+            console.log(`🔗 Linked ${count} org_end_user record(s) to auth user`);
+          }
+        })
+        .catch((err) =>
+          console.warn('⚠️ org_end_users link on login failed (non-fatal):', err.message),
+        );
 
       // If organizationId provided, add user to that organization
       let joinedOrganization = false;

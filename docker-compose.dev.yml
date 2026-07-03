@@ -43,11 +43,14 @@ services:
     volumes:
       # Mount source code for hot reload
       - ./src:/app/src
+      - ./public:/app/public
       - ./logs:/app/logs
       # Exclude node_modules
       - /app/node_modules
     command: npm run dev
     extra_hosts:
+      # Allow backend to reach the Next.js frontend running on the host machine
+      - "host.docker.internal:host-gateway"
       # Fix for Jio ISP DNS routing issue - bypass broken Jio DNS for Supabase
       - "atvdxtnuimpyhpknrwww.supabase.co:172.64.149.246"
 

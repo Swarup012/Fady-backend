@@ -24,4 +24,10 @@ router.put('/:id', requireAdmin, adminWidgetController.updateWidget);
 // Delete widget (admin/owner only)
 router.delete('/:id', requireAdmin, adminWidgetController.deleteWidget);
 
+// Rotate API secret (admin/owner only)
+router.post('/:id/rotate-secret', requireAdmin, adminWidgetController.rotateApiSecret);
+
+// Generate api_secret for legacy widgets missing one
+router.post('/:id/ensure-secret', requireAdmin, adminWidgetController.ensureApiSecret);
+
 module.exports = router;
