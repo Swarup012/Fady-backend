@@ -2,7 +2,7 @@
 
 This guide explains how to run the Fady backend using Docker.
 
-## Prerequisites
+## Prerequisite
 
 - Docker installed ([Get Docker](https://docs.docker.com/get-docker/))
 - Docker Compose installed (comes with Docker Desktop)
