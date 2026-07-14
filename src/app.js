@@ -77,8 +77,12 @@ const { handlePaddleWebhook } = require("./webhooks/paddle.webhook");
 // Stripe webhook (needs raw body) - DISABLED
 // app.post("/api/stripe/webhook", express.raw({ type: 'application/json' }), handleStripeWebhook);
 
-// Paddle webhook (needs parsed JSON body)
-app.post("/api/paddle/webhook", express.json(), handlePaddleWebhook);
+// Paddle webhook (needs raw body for signature verification, plus parsed JSON)
+app.post("/api/paddle/webhook", express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}), handlePaddleWebhook);
 
 // NOW we can parse JSON for all other routes (including other Stripe routes)
 app.use(express.json());

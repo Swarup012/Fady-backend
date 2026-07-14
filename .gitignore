@@ -16,3 +16,17 @@ test-db.js
 test-label.js
 test-redis.js
 test-sample.js
+
+# Custom testing and migration scripts
+add-address-column.js
+check-status.js
+claude.md
+clear-dummy-address.js
+paddle_address_migration.sql
+paddle_overage_migration.sql
+run-migration.js
+run-subscription-charge.js
+test-billing-fresh.js
+test-billing.js
+test-org-fetch.js
+test-polling-status.js

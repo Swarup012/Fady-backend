@@ -12,6 +12,7 @@
 const express = require('express');
 const router = express.Router();
 const { manualTriggerReset } = require('../jobs/scheduler');
+const overageService = require('../services/overage.service');
 const { 
   resetMonthlyTrackedUsersCache, 
   verifyReset,
@@ -148,6 +149,79 @@ router.post('/verify-reset', async (req, res) => {
       success: false,
       error: 'Failed to verify reset',
       message: error.message
+    });
+  }
+});
+
+// =====================================================
+// OVERAGE BILLING — MANUAL TRIGGERS
+// =====================================================
+
+/**
+ * POST /api/admin/billing/dry-run
+ * Simulate the monthly overage billing job without charging anyone.
+ * Safe to run at any time — reads DB and logs what WOULD happen.
+ *
+ * Response includes:
+ *   - billingPeriod   : YYYY-MM currently being simulated
+ *   - total           : number of active paid orgs evaluated
+ *   - charged         : orgs that WOULD be charged (dry-run)
+ *   - noCharge        : orgs with no overage this period
+ *   - skippedAlreadyCharged : orgs already marked 'charged' (idempotency)
+ *   - failures[]      : any unexpected errors during calculation
+ */
+router.post('/billing/dry-run', async (req, res) => {
+  try {
+    console.log(`🧪 [DRY RUN] Manual billing trigger by ${req.user?.email}`);
+    const results = await overageService.processMonthlyBilling({ dryRun: true });
+    return res.json({
+      success: true,
+      message: 'Dry-run complete — no charges were made',
+      data: results,
+    });
+  } catch (error) {
+    console.error('❌ Billing dry-run error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Dry-run failed',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * POST /api/admin/billing/run-now
+ * Manually trigger the monthly overage billing job in LIVE mode.
+ * This is idempotent: orgs already marked 'charged' this period are skipped.
+ *
+ * ⚠️  Use only when:
+ *   1. The cron job failed and you need to re-run it manually.
+ *   2. You confirmed the dry-run results look correct.
+ *
+ * Body (optional): { "confirm": true }  — acts as a safety gate.
+ */
+router.post('/billing/run-now', async (req, res) => {
+  if (!req.body?.confirm) {
+    return res.status(400).json({
+      success: false,
+      error: 'Safety gate: pass { "confirm": true } in the request body to proceed.',
+    });
+  }
+
+  try {
+    console.log(`⚡ [LIVE] Manual billing trigger by ${req.user?.email}`);
+    const results = await overageService.processMonthlyBilling({ dryRun: false });
+    return res.json({
+      success: true,
+      message: 'Live billing run complete',
+      data: results,
+    });
+  } catch (error) {
+    console.error('❌ Live billing trigger error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Billing run failed',
+      message: error.message,
     });
   }
 });

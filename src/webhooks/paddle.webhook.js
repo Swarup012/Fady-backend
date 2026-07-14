@@ -8,29 +8,28 @@ const { supabaseAdmin } = require('../config/supabase.config');
  * Paddle uses HMAC SHA256 signature in x-paddle-signature header
  */
 function verifyPaddleWebhook(req) {
-  // Paddle Billing (new API) uses 'paddle-signature' header (not 'x-paddle-signature')
+  // Paddle Billing (new API) uses 'paddle-signature' header
   const signature = req.headers['paddle-signature'];
   const webhookSecret = process.env.PADDLE_WEBHOOK_SECRET;
   
-  // Log all headers for debugging
-  console.log('🔍 Webhook headers:', Object.keys(req.headers));
-  
   if (!signature) {
     console.error('❌ Missing Paddle signature header (paddle-signature)');
-    console.error('   Available headers:', Object.keys(req.headers).join(', '));
-    
-    // TEMPORARY: Skip verification for testing
-    console.warn('⚠️ SKIPPING signature verification for testing');
-    return true;
+    return false;
   }
   
   if (!webhookSecret) {
-    console.warn('⚠️ PADDLE_WEBHOOK_SECRET not configured - signature verification skipped');
-    return true;
+    console.error('❌ PADDLE_WEBHOOK_SECRET not configured - signature verification failed');
+    return false;
+  }
+
+  // The Express route must capture the raw body (e.g., via express.json({ verify: ... }))
+  const rawBody = req.rawBody;
+  if (typeof rawBody !== 'string') {
+    console.error('❌ Missing req.rawBody - Express middleware must capture raw body for verification');
+    return false;
   }
   
   try {
-    // Paddle Billing uses a different signature format
     // Format: "ts=timestamp;h1=signature"
     const parts = signature.split(';');
     let timestamp = '';
@@ -42,10 +41,13 @@ function verifyPaddleWebhook(req) {
       if (key === 'h1') h1Signature = value;
     });
     
-    console.log('🔍 Signature parts:', { timestamp, h1Signature: h1Signature.substring(0, 20) + '...' });
-    
-    // Construct the signed payload: timestamp:body
-    const signedPayload = timestamp + ':' + JSON.stringify(req.body);
+    if (!timestamp || !h1Signature) {
+      console.error('❌ Invalid Paddle signature format');
+      return false;
+    }
+
+    // Construct the signed payload: timestamp:raw_body
+    const signedPayload = timestamp + ':' + rawBody;
     
     // Calculate HMAC
     const hmac = crypto.createHmac('sha256', webhookSecret);
@@ -59,19 +61,14 @@ function verifyPaddleWebhook(req) {
       console.error('❌ Paddle signature mismatch');
       console.error('   Expected:', calculatedSignature);
       console.error('   Received:', h1Signature);
-      
-      // TEMPORARY: Allow anyway for testing
-      console.warn('⚠️ ALLOWING despite mismatch for testing');
-      return true;
+      return false;
     }
     
     console.log('✅ Paddle signature verified successfully');
     return true;
   } catch (error) {
     console.error('❌ Error verifying Paddle signature:', error);
-    // TEMPORARY: Allow anyway for testing
-    console.warn('⚠️ ALLOWING despite error for testing');
-    return true;
+    return false;
   }
 }
 
@@ -136,11 +133,14 @@ async function handlePaddleWebhook(req, res) {
           const customerId = subscriptionData.customer_id || event.user_id;
           const subscriptionId = subscriptionData.id || event.subscription_id;
           const priceId = subscriptionData.items?.[0]?.price?.id || event.subscription_plan_id;
+          // Capture address_id now so overage charges don't need a live Paddle lookup later
+          const addressId = subscriptionData.address_id || null;
           
           console.log(`📋 Subscription details:`, {
             customerId,
             subscriptionId,
-            priceId
+            priceId,
+            addressId
           });
           
           await paddleService.storePaddleSubscription(
@@ -170,16 +170,19 @@ async function handlePaddleWebhook(req, res) {
           
           console.log(`📋 Detected plan: ${planName} (${billingCycle}) - Price ID: ${priceId}`);
           
-          // Update organization subscription status and plan
-          // Note: billing_cycle is determined from paddle_plan_id at runtime
+          // Update organization subscription status, plan, and address
+          const updatePayload = {
+            subscription_status: subscriptionData.status || 'active',
+            subscription_plan: planName,
+            tracked_users_limit: planName === 'pro' || planName === 'starter' ? 125 : 20,
+            updated_at: new Date().toISOString()
+          };
+          // Cache address_id if present — needed for automatic overage transactions
+          if (addressId) updatePayload.paddle_address_id = addressId;
+
           const { error: updateError } = await supabaseAdmin
             .from('organizations')
-            .update({
-              subscription_status: subscriptionData.status || 'active',
-              subscription_plan: planName,
-              tracked_users_limit: planName === 'pro' || planName === 'starter' ? 125 : 20,
-              updated_at: new Date().toISOString()
-            })
+            .update(updatePayload)
             .eq('id', organizationId);
           
           if (updateError) {

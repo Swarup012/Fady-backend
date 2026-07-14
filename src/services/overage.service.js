@@ -4,24 +4,29 @@
  * =====================================================
  * OVERAGE BILLING SERVICE
  * =====================================================
- * Handles tracked users overage calculation and Stripe billing
- * 
+ * Handles tracked users overage calculation and Paddle billing.
+ *
  * Business Logic:
  * - Base limit: 125 tracked users (Starter plan)
  * - Grace buffer: 25 users (20%)
  * - Effective limit: 150 users (no charge until exceeded)
- * - Overage: $6 per 50 users (billed monthly)
+ * - Overage: $6 per 50 users (billed monthly via Paddle one-time transaction)
  * - Peak tracking: Use highest usage during billing period
  * =====================================================
  */
 
+const axios = require('axios');
 const { supabaseAdmin } = require('../config/supabase.config');
-// const { stripe } = require('../config/stripe.config'); // DISABLED - Using Paddle only
 const { PLAN_CONFIG } = require('../config/plans.config');
 const cache = require('./redis.service');
 
-// Use PLAN_CONFIG for overage configuration
-const STRIPE_CONFIG = PLAN_CONFIG;
+// ── Paddle client config (mirrors paddle.service.js) ──────────────────────────
+const PADDLE_API_KEY = process.env.PADDLE_API_KEY;
+const IS_SANDBOX = PADDLE_API_KEY && PADDLE_API_KEY.includes('_sdbx_');
+const PADDLE_API_URL = IS_SANDBOX
+  ? 'https://sandbox-api.paddle.com'
+  : 'https://api.paddle.com';
+// ──────────────────────────────────────────────────────────────────────────────
 
 class OverageService {
   
@@ -245,114 +250,261 @@ class OverageService {
   }
 
   /**
-   * Report usage to Stripe (for metered billing)
-   * @param {string} organizationId - Organization UUID
-   * @param {number} blocks - Number of 50-user blocks to charge
+   * Report overage to Paddle via a one-time transaction.
+   *
+   * Idempotency: caller must verify no 'charged' row already exists for this
+   * billing period before calling this method.
+   *
+   * @param {string} organizationId  - Organization UUID
+   * @param {number} blocks          - Number of 50-user blocks to charge
+   * @param {number} totalCharge     - Dollar amount (e.g. 12.00 for 2 blocks)
+   * @param {string} billingPeriod   - YYYY-MM string used to label the charge
+   * @returns {{ reported: boolean, transactionId?: string, amount?: number }}
    */
-  async reportUsageToStripe(organizationId, blocks) {
-    try {
-      if (blocks === 0) return { reported: false, reason: 'no_usage' };
+  async reportUsageToPaddle(organizationId, blocks, totalCharge, billingPeriod) {
+    if (blocks === 0) return { reported: false, reason: 'no_usage' };
 
-      // Get organization's Stripe subscription
-      const { data: org, error } = await supabaseAdmin
-        .from('organizations')
-        .select('stripe_subscription_id, stripe_customer_id')
-        .eq('id', organizationId)
-        .single();
+    if (!PADDLE_API_KEY) {
+      throw new Error('PADDLE_API_KEY is not configured — cannot charge overage');
+    }
 
-      if (error || !org.stripe_subscription_id) {
-        throw new Error('Organization has no active Stripe subscription');
-      }
+    // ── 1. Fetch the org's Paddle customer and subscription IDs ─────────────
+    const { data: org, error: orgError } = await supabaseAdmin
+      .from('organizations')
+      .select('paddle_customer_id, paddle_subscription_id, name')
+      .eq('id', organizationId)
+      .single();
 
-      // Get the subscription to find the overage line item
-      const subscription = await stripe.subscriptions.retrieve(org.stripe_subscription_id);
-      
-      // Find the overage price item
-      const overageItem = subscription.items.data.find(
-        item => item.price.id === STRIPE_CONFIG.prices.overage_metered
+    if (orgError || !org) {
+      throw new Error(`Cannot find organization ${organizationId} to charge overage`);
+    }
+
+    if (!org.paddle_subscription_id) {
+      throw new Error(
+        `Organization ${organizationId} (${org.name}) has no paddle_subscription_id — ` +
+        'they must have an active Paddle subscription to be charged overage.'
       );
+    }
 
-      if (!overageItem) {
-        console.warn(`⚠️  Overage price not found in subscription for org ${organizationId}`);
-        return { reported: false, reason: 'no_overage_item' };
+    // ── 2. POST a one-time charge to the subscription ────────────────────────
+    const amountCents = Math.round(totalCharge * 100); // Paddle expects cents as a string
+    const description =
+      `Overage – ${billingPeriod}: ${blocks} block${blocks > 1 ? 's' : ''} × $6 ` +
+      `(${blocks * 50} extra tracked users)`;
+
+    console.log(
+      `💳 Charging Paddle overage for org ${organizationId} (${org.name}): ` +
+      `${blocks} blocks = $${totalCharge}`
+    );
+
+    const response = await axios.post(
+      `${PADDLE_API_URL}/subscriptions/${org.paddle_subscription_id}/charge`,
+      {
+        effective_from: 'immediately',
+        items: [
+          {
+            price: {
+              product: {
+                name: 'Tracked Users Overage',
+                tax_category: 'standard',
+              },
+              description,
+              unit_price: {
+                amount: String(amountCents),
+                currency_code: 'USD',
+              },
+            },
+            quantity: 1,
+          },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${PADDLE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
       }
+    );
 
-      // Report usage to Stripe
-      const usageRecord = await stripe.subscriptionItems.createUsageRecord(
-        overageItem.id,
+    // Paddle's POST /subscriptions/{id}/charge endpoint returns the subscription entity,
+    // not the new transaction. To get the transaction ID for our records, we fetch the 
+    // latest transaction for this subscription.
+    let transactionId = null;
+    try {
+      const txns = await axios.get(
+        `${PADDLE_API_URL}/transactions`,
         {
-          quantity: blocks,
-          timestamp: Math.floor(Date.now() / 1000),
-          action: 'set' // Replace previous usage (use 'increment' to add)
+          params: { subscription_id: org.paddle_subscription_id, order_by: 'id[DESC]', per_page: 1 },
+          headers: { Authorization: `Bearer ${PADDLE_API_KEY}` }
         }
       );
-
-      console.log(`✅ Reported ${blocks} blocks to Stripe for org ${organizationId}`);
-
-      return {
-        reported: true,
-        usageRecord,
-        blocks,
-        amount: blocks * 6.00
-      };
-
-    } catch (error) {
-      console.error('Error reporting usage to Stripe:', error);
-      throw error;
+      transactionId = txns.data?.data?.[0]?.id || null;
+    } catch (err) {
+      console.warn(`⚠️ Could not fetch resulting transaction ID for org ${organizationId}`, err.message);
     }
+
+    console.log(
+      `✅ Paddle overage charge created for org ${organizationId}: ` +
+      `${transactionId || 'Unknown ID'} ($${totalCharge})`
+    );
+
+    // ── 3. Mark the overage_charges row as 'charged' ───────────────────────
+    const { error: updateError } = await supabaseAdmin
+      .from('overage_charges')
+      .update({
+        charge_status: 'charged',
+        paddle_charge_id: transactionId,      // existing column (paddle_migration.sql)
+        paddle_transaction_id: transactionId, // new column (paddle_overage_migration.sql)
+      })
+      .eq('organization_id', organizationId)
+      .eq('billing_period', billingPeriod)
+      .eq('charge_status', 'pending');
+
+    if (updateError) {
+      // Transaction succeeded in Paddle but we failed to record it locally.
+      // Log prominently — this needs a manual fix, not a re-charge.
+      console.error(
+        `⚠️  RECONCILIATION NEEDED: Paddle transaction ${transactionId} was ` +
+        `created for org ${organizationId} but DB update failed:`,
+        updateError
+      );
+    }
+
+    return {
+      reported: true,
+      transactionId,
+      blocks,
+      amount: totalCharge,
+    };
   }
 
   /**
-   * Process end-of-month billing for all organizations
-   * Called by monthly cron job
+   * Process end-of-month billing for all organizations.
+   * Called by the monthly cron job (scheduler.js).
+   *
+   * @param {{ dryRun?: boolean }} [options]
+   *   dryRun = true  → calculates everything and logs, but does NOT call Paddle or
+   *                     write 'charged' status. Use this for staging / manual QA.
+   *   dryRun = false (default) → live mode, charges Paddle and updates DB.
    */
-  async processMonthlyBilling() {
-    try {
-      const billingPeriod = new Date().toISOString().slice(0, 7); // YYYY-MM
-      console.log(`🔄 Starting monthly billing for period: ${billingPeriod}`);
+  async processMonthlyBilling({ dryRun = false } = {}) {
+    const billingPeriod = new Date().toISOString().slice(0, 7); // YYYY-MM
 
-      // Get all organizations with starter/pro plans
-      const { data: orgs, error } = await supabaseAdmin
-        .from('organizations')
-        .select('id, name, subscription_plan, subscription_status')
-        .in('subscription_plan', ['starter', 'pro'])
-        .in('subscription_status', ['active', 'trialing']);
+    console.log('\n' + '='.repeat(60));
+    console.log(`💰 Monthly billing | period: ${billingPeriod} | dryRun: ${dryRun}`);
+    console.log('='.repeat(60));
 
-      if (error) throw error;
+    // ── 1. Fetch orgs on paid plans ────────────────────────────────────────
+    const { data: orgs, error: orgsError } = await supabaseAdmin
+      .from('organizations')
+      .select('id, name, subscription_plan, subscription_status')
+      .in('subscription_plan', ['starter', 'pro'])
+      .in('subscription_status', ['active', 'trialing']);
 
-      const results = {
-        total: orgs.length,
-        charged: 0,
-        noCharge: 0,
-        errors: 0
-      };
+    if (orgsError) throw orgsError;
 
-      for (const org of orgs) {
-        try {
-          // Calculate overage
-          const result = await this.calculateMonthlyOverage(org.id, billingPeriod);
-          
-          if (result.charged) {
-            // Report to Stripe
-            await this.reportUsageToStripe(org.id, result.overage.blocks);
-            results.charged++;
-          } else {
-            results.noCharge++;
-          }
+    const results = {
+      billingPeriod,
+      dryRun,
+      total: orgs.length,
+      charged: 0,
+      noCharge: 0,
+      skippedAlreadyCharged: 0,
+      errors: 0,
+      failures: [], // { orgId, orgName, error } for each failed charge
+    };
 
-        } catch (error) {
-          console.error(`Error processing billing for org ${org.id}:`, error);
-          results.errors++;
+    // ── 2. Process each org individually — never let one crash the loop ────
+    for (const org of orgs) {
+      try {
+        // ── 2a. Calculate whether overage is owed ─────────────────────────
+        const result = await this.calculateMonthlyOverage(org.id, billingPeriod);
+
+        if (!result.charged) {
+          // No overage this month
+          console.log(
+            `  ✅ No overage | ${org.name} (${org.id}) | reason: ${result.reason}`
+          );
+          results.noCharge++;
+          continue;
         }
+
+        const { blocks, totalCharge } = result.overage;
+
+        // ── 2b. Idempotency: skip if already charged this period ───────────
+        const { data: existingCharge } = await supabaseAdmin
+          .from('overage_charges')
+          .select('id, charge_status')
+          .eq('organization_id', org.id)
+          .eq('billing_period', billingPeriod)
+          .eq('charge_status', 'charged')
+          .maybeSingle();
+
+        if (existingCharge) {
+          console.warn(
+            `  ⚠️  Already charged | ${org.name} (${org.id}) | ` +
+            `skipping to prevent double-charge`
+          );
+          results.skippedAlreadyCharged++;
+          continue;
+        }
+
+        // ── 2c. Dry-run: log only, don't charge ───────────────────────────
+        if (dryRun) {
+          console.log(
+            `  🧪 [DRY RUN] Would charge | ${org.name} (${org.id}) | ` +
+            `${blocks} blocks × $6 = $${totalCharge}`
+          );
+          results.charged++; // count as "would charge" for summary
+          continue;
+        }
+
+        // ── 2d. Live: charge via Paddle ────────────────────────────────────
+        console.log(
+          `  💳 Charging | ${org.name} (${org.id}) | ` +
+          `${blocks} blocks × $6 = $${totalCharge}`
+        );
+        await this.reportUsageToPaddle(org.id, blocks, totalCharge, billingPeriod);
+        results.charged++;
+
+      } catch (err) {
+        // Isolate failures — one bad org must not block the rest
+        let errMsg = err.message || String(err);
+        if (err?.response?.data) {
+          errMsg = `Paddle API Error: ${JSON.stringify(err.response.data)}`;
+        }
+        console.error(
+          `  ❌ CHARGE FAILED | ${org.name} (${org.id}) |\n` +
+          `  Error Details: ${errMsg}`
+        );
+        results.errors++;
+        results.failures.push({
+          orgId: org.id,
+          orgName: org.name,
+          error: errMsg,
+        });
       }
-
-      console.log(`✅ Monthly billing complete:`, results);
-      return results;
-
-    } catch (error) {
-      console.error('Error processing monthly billing:', error);
-      throw error;
     }
+
+    // ── 3. Summary ─────────────────────────────────────────────────────────
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 Monthly billing summary:');
+    console.log(
+      `   Total: ${results.total} | ` +
+      `Charged: ${results.charged} | ` +
+      `No Charge: ${results.noCharge} | ` +
+      `Already Charged: ${results.skippedAlreadyCharged} | ` +
+      `Errors: ${results.errors}`
+    );
+    if (results.failures.length > 0) {
+      console.error('   ❌ Failed organizations:');
+      results.failures.forEach(f =>
+        console.error(`      - ${f.orgName} (${f.orgId}): ${f.error}`)
+      );
+    }
+    console.log('='.repeat(60) + '\n');
+
+    return results;
   }
 
   /**
