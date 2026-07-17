@@ -3,6 +3,7 @@ const config = require('../config/env.config');
 const cache = require('./redis.service');
 const emailService = require('./email.service');
 const crypto = require('crypto');
+const jobRolesService = require('./job-roles.service');
 
 class AuthService {
   /**
@@ -538,6 +539,19 @@ class AuthService {
           profile.organization_role = membership.role;
           profile.job_role = membership.job_role;
           profile.organization_id = profile.current_organization_id;
+
+          // Enrich with human-readable name + icon from org_job_roles
+          if (membership.job_role) {
+            const { data: roleDef } = await supabaseAdmin
+              .from('organization_job_roles')
+              .select('name, icon')
+              .eq('organization_id', profile.current_organization_id)
+              .eq('key', membership.job_role)
+              .maybeSingle();
+
+            profile.job_role_name = roleDef ? roleDef.name : membership.job_role;
+            profile.job_role_icon = roleDef ? roleDef.icon : 'UserCircle';
+          }
         }
       }
 

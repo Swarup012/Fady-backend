@@ -14,7 +14,7 @@ class InvitationController {
   async createInvitation(req, res) {
     try {
       const { orgId } = req.params;
-      const { email, role } = req.body;
+      const { email, role, jobRole } = req.body;
       const inviterId = req.user.id;
 
       if (!email) {
@@ -26,7 +26,8 @@ class InvitationController {
         orgId,
         email,
         inviterId,
-        role || 'member'
+        role || 'member',
+        jobRole || 'other'
       );
 
       // Send invitation email

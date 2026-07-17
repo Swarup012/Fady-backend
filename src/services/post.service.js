@@ -221,7 +221,7 @@ class PostService {
   /**
    * Create new post
    */
-  async createPost({ board_id, title, description, author_id, images, frontendOrigin = null }) {
+  async createPost({ board_id, title, description, author_id, images, category, frontendOrigin = null }) {
     try {
       // Validate images array
       if (images) {
@@ -261,6 +261,7 @@ class PostService {
         is_pinned: false,
         is_archived: false,
         images: images || [], // ✅ Add images array
+        category: category || null, // ✅ Add category
       };
 
       // Add organization_id if board has one

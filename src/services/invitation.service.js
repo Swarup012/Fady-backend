@@ -26,7 +26,7 @@ class InvitationService {
    * @param {string} role - Role to assign (default: 'member')
    * @returns {Promise<object>} Created invitation
    */
-  async createInvitation(organizationId, email, invitedBy, role = 'member') {
+  async createInvitation(organizationId, email, invitedBy, role = 'member', jobRole = 'other') {
     try {
       // Validate inputs
       if (!organizationId || !email || !invitedBy) {
@@ -107,6 +107,7 @@ class InvitationService {
           email: email.toLowerCase(),
           token,
           role,
+          job_role: jobRole,
           invited_by: invitedBy,
           status: 'pending',
           expires_at: expiresAt.toISOString(),
@@ -252,7 +253,7 @@ class InvitationService {
           organization_id: invitation.organization_id,
           user_id: userId,
           role: invitation.role,
-          job_role: 'marketer', // Default job role for invited members (lowercase to match DB constraint)
+          job_role: invitation.job_role || 'other', // Use job_role from invitation
           invited_by: invitation.invited_by,
           joined_via: 'invite',
         })

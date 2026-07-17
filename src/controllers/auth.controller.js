@@ -592,6 +592,22 @@ class AuthController {
         return ResponseUtil.error(res, 'Server authentication configuration error', 500);
       }
 
+      // Fetch organization_role and job_role so the frontend can route correctly
+      let organizationRole = null;
+      let jobRole = null;
+      if (user.current_organization_id) {
+        const { data: membership } = await supabaseAdmin
+          .from('organization_members')
+          .select('role, job_role')
+          .eq('user_id', user.id)
+          .eq('organization_id', user.current_organization_id)
+          .single();
+        if (membership) {
+          organizationRole = membership.role;
+          jobRole = membership.job_role;
+        }
+      }
+
       const token = jwt.sign(
         { 
           userId: user.id, 
@@ -617,6 +633,8 @@ class AuthController {
           avatar_url: user.avatar_url,
           google_id: user.google_id,
           current_organization_id: user.current_organization_id,
+          organization_role: organizationRole,
+          job_role: jobRole,
         },
         token,
         needsOnboarding,

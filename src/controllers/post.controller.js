@@ -104,7 +104,7 @@ class PostController {
       }
 
       const { slug } = req.params;
-      const { title, description, images } = req.body;
+      const { title, description, images, category } = req.body;
 
       // Validate images if provided
       if (images) {
@@ -136,6 +136,7 @@ class PostController {
         description,
         author_id: req.user.id,
         images: images || [], // ✅ Pass images array
+        category: category || null, // ✅ Pass category
         frontendOrigin,
       });
 

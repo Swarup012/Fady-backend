@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const organizationController = require('../controllers/organization.controller');
 const invitationController = require('../controllers/invitation.controller');
+const jobRolesController = require('../controllers/job-roles.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { checkInvitationLimit, checkOrganizationLimit } = require('../middleware/plan-limits.middleware');
 
@@ -56,5 +57,21 @@ router.post('/:orgId/invites/:inviteId/resend', invitationController.resendInvit
 
 // Revoke invitation (owner only)
 router.delete('/:orgId/invites/:inviteId', invitationController.revokeInvitation);
+
+// =====================================================
+// JOB ROLES ROUTES (Dynamic per-org job roles)
+// =====================================================
+
+// List all job roles for an organization (any member)
+router.get('/:orgId/job-roles', jobRolesController.listJobRoles);
+
+// Create a new custom job role (admin/owner only)
+router.post('/:orgId/job-roles', jobRolesController.createJobRole);
+
+// Update a job role's name/icon (admin/owner only; key is immutable)
+router.put('/:orgId/job-roles/:roleId', jobRolesController.updateJobRole);
+
+// Delete a job role with cleanup (admin/owner only; blocks non-deletable)
+router.delete('/:orgId/job-roles/:roleId', jobRolesController.deleteJobRole);
 
 module.exports = router;

@@ -1,4 +1,5 @@
 const { supabase, supabaseAdmin } = require('../config/supabase.config');
+const jobRolesService = require('./job-roles.service');
 
 const organizationService = {
   /**
@@ -114,6 +115,13 @@ const organizationService = {
           // Rollback organization creation
           await supabaseAdmin.from('organizations').delete().eq('id', organization.id);
           throw memberError;
+        }
+
+        // 5b. Seed default job roles for this organization
+        try {
+          await jobRolesService.seedDefaultRoles(organization.id);
+        } catch (seedErr) {
+          console.error('⚠️ Failed to seed default job roles (non-fatal):', seedErr);
         }
 
         // 6. Update user's current_organization_id only (role is in organization_members)
@@ -379,6 +387,13 @@ const organizationService = {
         throw memberError;
       }
 
+      // 5b. Seed default job roles
+      try {
+        await jobRolesService.seedDefaultRoles(organization.id);
+      } catch (seedErr) {
+        console.error('⚠️ Failed to seed default job roles (non-fatal):', seedErr);
+      }
+
       // 6. Set as current organization
       const { error: userError } = await supabaseAdmin
         .from('users')
@@ -501,17 +516,31 @@ const organizationService = {
 
       console.log('✅ Fetched', data?.length || 0, 'members from database');
 
+      // Fetch the org's job role definitions for enrichment
+      const { data: roleDefinitions } = await supabaseAdmin
+        .from('organization_job_roles')
+        .select('key, name, icon')
+        .eq('organization_id', organizationId);
+
+      const roleMap = {};
+      (roleDefinitions || []).forEach(r => { roleMap[r.key] = r; });
+
       // Transform data to match expected format
-      const members = data.map(item => ({
-        id: item.users.id,
-        name: item.users.name,
-        email: item.users.email,
-        avatar_url: item.users.avatar_url,
-        organization_role: item.role, // Permission role: owner/admin/member
-        job_role: item.job_role, // Job role: founder/designer/developer/etc
-        created_at: item.users.created_at,
-        joined_at: item.joined_at
-      }));
+      const members = data.map(item => {
+        const roleDef = roleMap[item.job_role] || null;
+        return {
+          id: item.users.id,
+          name: item.users.name,
+          email: item.users.email,
+          avatar_url: item.users.avatar_url,
+          organization_role: item.role, // Permission role: owner/admin/member
+          job_role: item.job_role,        // Job role key: founder/designer/developer/etc
+          job_role_name: roleDef ? roleDef.name : (item.job_role || null), // Human name
+          job_role_icon: roleDef ? roleDef.icon : 'UserCircle',             // Lucide icon name
+          created_at: item.users.created_at,
+          joined_at: item.joined_at
+        };
+      });
 
       console.log('✅ Returning', members.length, 'transformed members');
       return members;
