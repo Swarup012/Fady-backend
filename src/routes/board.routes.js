@@ -27,11 +27,7 @@ const createBoardValidation = [
     .trim()
     .isLength({ max: 50 })
     .withMessage("Icon must be less than 50 characters"),
-  body("category") // ✅ ADD CATEGORY VALIDATION
-    .optional()
-    .trim()
-    .isLength({ min: 2, max: 100 })
-    .withMessage("Category must be between 2 and 100 characters"),
+
   body("visible_to_roles") // ✅ ADD VISIBLE_TO_ROLES VALIDATION
     .optional()
     .isArray()

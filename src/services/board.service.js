@@ -223,7 +223,6 @@ class BoardService {
          slug,
          description: description || null,
          is_private: is_private || false,
-         category: category || 'General',
          icon: icon || '💡',
          owner_id,
          post_count: 0
@@ -250,7 +249,7 @@ class BoardService {
        const roleInfo = data.visible_to_roles && data.visible_to_roles.length > 0 
          ? ` - Visible to: ${data.visible_to_roles.join(', ')}` 
          : ' - Visible to all';
-       console.log(`✅ Board created: ${data.name} (${data.slug}) - Category: ${data.category}${roleInfo}`);
+       console.log(`✅ Board created: ${data.name} (${data.slug})${roleInfo}`);
        
        // 🔴 Invalidate board list cache for this organization
        if (organization_id) {

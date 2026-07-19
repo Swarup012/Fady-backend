@@ -46,6 +46,15 @@ BEGIN
   END LOOP;
 END $$;
 
--- 3. Add job_role column to organization_invitations
+-- 4. Add job_role column to organization_invitations
 ALTER TABLE organization_invitations 
 ADD COLUMN IF NOT EXISTS job_role TEXT DEFAULT 'other';
+
+-- 5. Drop the hardcoded CHECK constraint on organization_members.job_role
+--    This constraint only allowed the old static role values and blocks dynamic roles.
+ALTER TABLE organization_members
+DROP CONSTRAINT IF EXISTS valid_job_role;
+
+-- Also drop the same constraint from organization_invitations if it exists
+ALTER TABLE organization_invitations
+DROP CONSTRAINT IF EXISTS valid_job_role;

@@ -19,6 +19,8 @@ const dashboardRoutes = require("./routes/dashboard.routes");
 const widgetRoutes = require("./routes/widget.routes");
 const adminWidgetRoutes = require("./routes/admin-widget.routes");
 const clusterRoutes = require("./routes/cluster.routes");
+const feedbackChatRoutes = require("./routes/feedbackChat.routes");
+const aiChatRoutes = require("./routes/aiChat.routes");
 const { authenticate } = require("./middleware/auth.middleware");
 const { injectOrganization } = require("./middleware/organization.middleware");
 
@@ -197,6 +199,12 @@ app.use("/api/dashboard", authenticate, injectOrganization, dashboardRoutes);
 app.use("/api/boards", authenticate, injectOrganization, boardRoutes);
 app.use("/api/users", authenticate, injectOrganization, userRoutes);
 app.use("/api/organizations", organizationRoutes); // Organization routes handle their own auth (some routes are public)
+
+// ✅ AI FEEDBACK CHAT ROUTE (admin/owner only, org-scoped, rate-limited, streaming)
+app.use("/api/organizations/:orgId/feedback-chat", feedbackChatRoutes);
+
+// ✅ AI CHAT CONVERSATIONS + MESSAGES (admin/owner only, org-scoped, persisted)
+app.use("/api/organizations/:orgId/ai-chat", aiChatRoutes);
 app.use("/api/upload", authenticate, injectOrganization, uploadRoutes);
 app.use("/api", authenticate, injectOrganization, changelogRoutes);
 app.use("/api", authenticate, injectOrganization, postRoutes);

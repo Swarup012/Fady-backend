@@ -396,7 +396,7 @@ class BoardController {
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { name, description, is_private, icon, category, visible_to_roles } = req.body;
+      const { name, description, is_private, icon, visible_to_roles } = req.body;
       const owner_id = req.user.id;
 
       // Get user's organization_id (if they have one)
@@ -410,7 +410,6 @@ class BoardController {
         description,
         is_private,
         icon,
-        category,
         owner_id,
         organization_id,
         visible_to_roles, // ✅ Pass the role targeting array
